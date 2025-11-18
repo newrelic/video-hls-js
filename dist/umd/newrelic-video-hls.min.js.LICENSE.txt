@@ -1,0 +1,8 @@
+/*!
+ * @license Apache-2.0
+ * @newrelic/video-hls 0.0.1-beta
+ * Copyright New Relic <http://newrelic.com/>
+ * @author Peter Addo
+ */
+
+/*! For license information please see index.js.LICENSE.txt */
