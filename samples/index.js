@@ -1,8 +1,8 @@
 const options = {
   info: {
-    beacon: 'bam.nr-data.net',
-    licenseKey: 'NRBR-01f969533907bc8f28f',
-    applicationID: '594620663',
+    beacon: '',
+    licenseKey: '',
+    applicationID: '',
   },
 };
 
