@@ -112,13 +112,11 @@ export default class HLSTracker extends nrvideo.VideoTracker {
 
     // Hook HLS.js events - store bound methods for proper cleanup
     // Manifest and level events
-    this._onManifestLoaded = this.onManifestLoaded.bind(this);
     this._onQualityChange = this.onQualityChange.bind(this);
     this._onDownload = this.onDownload.bind(this);
     this._onBufferAppended = this.onBufferAppended.bind(this);
     this._onError = this.onError.bind(this);
     
-    this.player.on(HlsEvents.MANIFEST_LOADED, this._onManifestLoaded);
     this.player.on(HlsEvents.LEVEL_SWITCHED, this._onQualityChange);
     this.player.on(HlsEvents.FRAG_LOADED, this._onDownload);
     this.player.on(HlsEvents.BUFFER_APPENDED, this._onBufferAppended);
@@ -152,9 +150,6 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     if (!this.player || !this.tag) return;
 
     // Unregister HLS.js events using stored bound methods
-    if (this._onManifestLoaded) {
-      this.player.off(HlsEvents.MANIFEST_LOADED, this._onManifestLoaded);
-    }
     if (this._onQualityChange) {
       this.player.off(HlsEvents.LEVEL_SWITCHED, this._onQualityChange);
     }
@@ -265,10 +260,6 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     if (level) {
       this.sendRenditionChanged();
     }
-  }
-
-  // HLS.js specific event handlers
-  onManifestLoaded(event, data) {
   }
 
   onBufferAppended(event, data) {
