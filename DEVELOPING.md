@@ -1,8 +1,8 @@
 [![Community Project header](https://github.com/newrelic/opensource-website/raw/master/src/images/categories/Community_Project.png)](https://opensource.newrelic.com/oss-category/#community-project)
 
-# New Relic Dash Tracker
+# New Relic HLS Tracker
 
-New Relic video tracking for Dash Player.
+New Relic video tracking for HLS Player.
 
 ## Requirements
 
@@ -45,7 +45,7 @@ options = {
   },
 };
 
-const tracker = new DashTracker(player, options);
+const tracker = new HLSTracker(player, options);
 ```
 
 ## Release
