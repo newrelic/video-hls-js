@@ -7,15 +7,17 @@ const HlsEvents = Hls.Events;
 
 export default class HLSTracker extends nrvideo.VideoTracker {
   constructor(player, options) {
-    super(player.media, options);
-    
-    // Now set this.hls immediately after super() so it's available
-    this.hls = player;
-    this.registerListeners();
-    
+    super(player, options);
     nrvideo.Core.addTracker(this, options);
     this.options = options;
+
   }
+  setPlayer(player, tag) {
+    if (!tag && player.media) tag = player.media;
+    nrvideo.VideoTracker.prototype.setPlayer.call(this, player, tag);
+  }
+
+
   getTrackerName() {
     return 'hls';
   }
@@ -41,28 +43,28 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   getPlayhead() {
-    return this.player.currentTime * 1000;
+    return this.tag.currentTime * 1000;
   }
 
   getDuration() {
-    return this.player.duration * 1000;
+    return this.tag.duration * 1000;
   }
 
   getSrc() {
-    return this.player.currentSrc;
+    return this.tag.currentSrc;
   }
 
   isMuted() {
-    return this.player.muted;
+    return this.tag.muted;
   }
 
   getCurrentVideoQuality() {
-    if (!this.hls) return null;
+    if (!this.player) return null
     
-    const levelIndex = this.hls.currentLevel;
-    if (levelIndex < 0 || !this.hls.levels) return null; // auto or unknown yet
+    const levelIndex = this.player.currentLevel;
+    if (levelIndex < 0 || !this.player.levels) return null; // auto or unknown yet
   
-    const level = this.hls.levels[levelIndex];
+    const level = this.player.levels[levelIndex];
     if (!level) return null;
     
     return {
@@ -102,7 +104,7 @@ export default class HLSTracker extends nrvideo.VideoTracker {
 
   registerListeners() {
     // Guard: Ensure HLS instance exists before registering listeners
-    if (!this.hls) {
+    if (!this.player) {
       return;
     }
 
@@ -116,11 +118,11 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     this._onBufferAppended = this.onBufferAppended.bind(this);
     this._onError = this.onError.bind(this);
     
-    this.hls.on(HlsEvents.MANIFEST_LOADED, this._onManifestLoaded);
-    this.hls.on(HlsEvents.LEVEL_SWITCHED, this._onQualityChange);
-    this.hls.on(HlsEvents.FRAG_LOADED, this._onDownload);
-    this.hls.on(HlsEvents.BUFFER_APPENDED, this._onBufferAppended);
-    this.hls.on(HlsEvents.ERROR, this._onError);
+    this.player.on(HlsEvents.MANIFEST_LOADED, this._onManifestLoaded);
+    this.player.on(HlsEvents.LEVEL_SWITCHED, this._onQualityChange);
+    this.player.on(HlsEvents.FRAG_LOADED, this._onDownload);
+    this.player.on(HlsEvents.BUFFER_APPENDED, this._onBufferAppended);
+    this.player.on(HlsEvents.ERROR, this._onError);
     
     // Hook HTML5 video element events (for events HLS.js doesn't provide)
     // Bind methods to preserve 'this' context and store for cleanup
@@ -135,64 +137,64 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     this.onVideoError = this.onVideoError.bind(this);
 
     // Register HTML5 video event listeners
-    this.player.addEventListener('play', this.onPlay);
-    this.player.addEventListener('playing', this.onPlaying);
-    this.player.addEventListener('pause', this.onPause);
-    this.player.addEventListener('seeking', this.onSeeking);
-    this.player.addEventListener('seeked', this.onSeeked);
-    this.player.addEventListener('ended', this.onEnded);
-    this.player.addEventListener('waiting', this.onWaiting);
-    this.player.addEventListener('canplay', this.onCanPlay);
-    this.player.addEventListener('error', this.onVideoError);
+    this.tag.addEventListener('play', this.onPlay);
+    this.tag.addEventListener('playing', this.onPlaying);
+    this.tag.addEventListener('pause', this.onPause);
+    this.tag.addEventListener('seeking', this.onSeeking);
+    this.tag.addEventListener('seeked', this.onSeeked);
+    this.tag.addEventListener('ended', this.onEnded);
+    this.tag.addEventListener('waiting', this.onWaiting);
+    this.tag.addEventListener('canplay', this.onCanPlay);
+    this.tag.addEventListener('error', this.onVideoError);
   }
 
   unregisterListeners() {
-    if (!this.hls || !this.player) return;
+    if (!this.player || !this.tag) return;
 
     // Unregister HLS.js events using stored bound methods
     if (this._onManifestLoaded) {
-      this.hls.off(HlsEvents.MANIFEST_LOADED, this._onManifestLoaded);
+      this.player.off(HlsEvents.MANIFEST_LOADED, this._onManifestLoaded);
     }
     if (this._onQualityChange) {
-      this.hls.off(HlsEvents.LEVEL_SWITCHED, this._onQualityChange);
+      this.player.off(HlsEvents.LEVEL_SWITCHED, this._onQualityChange);
     }
     if (this._onDownload) {
-      this.hls.off(HlsEvents.FRAG_LOADED, this._onDownload);
+      this.player.off(HlsEvents.FRAG_LOADED, this._onDownload);
     }
     if (this._onBufferAppended) {
-      this.hls.off(HlsEvents.BUFFER_APPENDED, this._onBufferAppended);
+      this.player.off(HlsEvents.BUFFER_APPENDED, this._onBufferAppended);
     }
     if (this._onError) {
-      this.hls.off(HlsEvents.ERROR, this._onError);
+      this.player.off(HlsEvents.ERROR, this._onError);
     }
 
     // Unregister HTML5 video event listeners
     if (this.onPlay) {
-      this.player.removeEventListener('play', this.onPlay);
+      this.tag.removeEventListener('play', this.onPlay);
     }
     if (this.onPlaying) {
-      this.player.removeEventListener('playing', this.onPlaying);
+      this.tag.removeEventListener('playing', this.onPlaying);
     }
     if (this.onPause) {
-      this.player.removeEventListener('pause', this.onPause);
+      this.tag.removeEventListener('pause', this.onPause);
     }
     if (this.onSeeking) {
-      this.player.removeEventListener('seeking', this.onSeeking);
+      this.tag.removeEventListener('seeking', this.onSeeking);
     }
     if (this.onSeeked) {
-      this.player.removeEventListener('seeked', this.onSeeked);
+      this.tag.removeEventListener('seeked', this.onSeeked);
     }
     if (this.onEnded) {
-      this.player.removeEventListener('ended', this.onEnded);
+      this.tag.removeEventListener('ended', this.onEnded);
     }
     if (this.onWaiting) {
-      this.player.removeEventListener('waiting', this.onWaiting);
+      this.tag.removeEventListener('waiting', this.onWaiting);
     }
     if (this.onCanPlay) {
-      this.player.removeEventListener('canplay', this.onCanPlay);
+      this.tag.removeEventListener('canplay', this.onCanPlay);
     }
     if (this.onVideoError) {
-      this.player.removeEventListener('error', this.onVideoError);
+      this.tag.removeEventListener('error', this.onVideoError);
     }
   }
 
@@ -259,7 +261,7 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   onQualityChange(event, data) {
-    const level = data?.level !== undefined ? this.hls.levels[data.level] : null;
+    const level = data?.level !== undefined ? this.player.levels[data.level] : null;
     if (level) {
       this.sendRenditionChanged();
     }
@@ -267,7 +269,6 @@ export default class HLSTracker extends nrvideo.VideoTracker {
 
   // HLS.js specific event handlers
   onManifestLoaded(event, data) {
-    // Manifest loaded - getCurrentVideoQuality() will read from this.hls.levels[this.hls.currentLevel]
   }
 
   onBufferAppended(event, data) {
