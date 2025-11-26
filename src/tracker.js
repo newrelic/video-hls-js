@@ -17,13 +17,12 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     nrvideo.VideoTracker.prototype.setPlayer.call(this, player, tag);
   }
 
-
   getTrackerName() {
     return 'hls';
   }
 
   getPlayerName() {
-    return 'HLS';
+    return 'HLS-JS';
   }
 
   getInstrumentationProvider() {
@@ -39,6 +38,10 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   getPlayerVersion() {
+    return this.player?.version || Hls.version;
+  }
+
+  getTrackerVersion() {
     return version;
   }
 
