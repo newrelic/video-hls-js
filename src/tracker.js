@@ -38,7 +38,7 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   getPlayerVersion() {
-    return this.player?.version || Hls.version;
+    return Hls.version;
   }
 
   getTrackerVersion() {

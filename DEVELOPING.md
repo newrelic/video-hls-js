@@ -4,10 +4,6 @@
 
 New Relic video tracking for HLS Player.
 
-## Requirements
-
-This video monitor solutions works on top of New Relic's **Browser Agent**.
-
 ## Build
 
 Install dependencies:
