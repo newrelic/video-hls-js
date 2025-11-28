@@ -48,14 +48,11 @@ var hls = null;
 var tracker = null;
 
 if (Hls.isSupported()) {
-  console.log('Hls.isSupported');
   hls = new Hls();
   hls.loadSource(videoSrc);
   hls.attachMedia(video);
-  console.log('video', hls.media);
   // Create tracker after HLS is initialized and media is attached
   // Pass an object with both hls instance and media element
-  console.log('hls', hls);
   tracker = new HLSTracker(hls, options);
 } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
   // Native HLS support (Safari)
@@ -90,4 +87,12 @@ Important: Ingesting video telemetry data via this video agent requires a subscr
 
 ## License
 
-New Relic HLS Tracker is licensed under the [Apache 2.0](http://apache.org/licenses/LICENSE-2.0.txt) License.
+New Relic HLS Tracker is licensed under the [New Relic Pre-release policy](https://docs.newrelic.com/docs/licenses/license-information/referenced-policies/new-relic-pre-release-policy/).
+
+**Beta Release Notice:**
+- This is a beta release suitable for testing and evaluation
+- APIs may change in future versions based on feedback
+- Please report issues and provide feedback via GitHub issues
+- Contributions and pull requests are welcome
+
+It also uses source code from third-party libraries. You can find full details on which libraries are used and the terms under which they are licensed in the [third-party notices document](./THIRD_PARTY_NOTICES.md).
