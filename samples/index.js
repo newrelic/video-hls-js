@@ -6,6 +6,11 @@ const options = {
   },
 };
 
+// Initialize your player with new relic Tracker to send data
+
+
+
+
 var video = document.getElementById('video');
 var videoSrc = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
 var hls = null;
