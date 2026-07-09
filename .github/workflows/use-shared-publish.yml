@@ -1,19 +1,11 @@
 name: Build and Publish
 
 on:
-  pull_request:
-    types:
-    - closed
-    branches:
-    - main
-
-permissions:
-  contents: write
-  id-token: write
+  workflow_dispatch:
+  workflow_call:
 
 jobs:
   build-and-publish:
-    if: github.event.pull_request.merged == true
     uses: newrelic/video-core-js/.github/workflows/npm-publish.yml@stable
     with:
       s3-path: 'media-agents/browser/hls-js'
