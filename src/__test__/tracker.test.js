@@ -44,7 +44,11 @@ const mockVideoElement = {
   duration: 100,
   currentSrc: 'https://example.com/stream.m3u8',
   muted: false,
-  playbackRate: 1
+  playbackRate: 1,
+  networkState: 2,
+  readyState: 4,
+  NETWORK_LOADING: 2,
+  HAVE_FUTURE_DATA: 3
 };
 
 describe('HLSTracker', () => {
@@ -63,10 +67,10 @@ describe('HLSTracker', () => {
     mockHlsInstance.preload = 'auto';
     mockHlsInstance.bandwidthEstimate = undefined;
     mockHlsInstance.error = undefined;
-    mockHlsInstance.networkState = 2;
-    mockHlsInstance.readyState = 4;
-    mockHlsInstance.NETWORK_LOADING = 2;
-    mockHlsInstance.HAVE_FUTURE_DATA = 3;
+    mockVideoElement.networkState = 2;
+    mockVideoElement.readyState = 4;
+    mockVideoElement.NETWORK_LOADING = 2;
+    mockVideoElement.HAVE_FUTURE_DATA = 3;
     // Provide media so VideoTracker.setPlayer resolves the tag correctly
     // instead of falling back to the HLS player instance
     mockHlsInstance.media = mockVideoElement;
@@ -100,16 +104,16 @@ describe('HLSTracker', () => {
       expect(tracker.getPlayerVersion()).toBe(Hls.version);
     });
 
-    it('should return instrumentation name as HLS-JS', () => {
-      expect(tracker.getInstrumentationName()).toBe('HLS-JS');
+    it('should return instrumentation name as hls', () => {
+      expect(tracker.getInstrumentationName()).toBe('hls');
     });
 
     it('should return instrumentation provider as New Relic', () => {
       expect(tracker.getInstrumentationProvider()).toBe('New Relic');
     });
 
-    it('should return instrumentation version from player', () => {
-      expect(tracker.getInstrumentationVersion()).toBe(Hls.version);
+    it('should return instrumentation version from tracker', () => {
+      expect(tracker.getInstrumentationVersion()).toBe(version);
     });
   });
 
@@ -440,24 +444,26 @@ describe('HLSTracker', () => {
 
     it('should handle HLS error event with code', () => {
       tracker.sendError = jest.fn();
-      const errorData = { code: 404, fatal: false };
-      tracker.onError('error', errorData);
+      tracker.onError('error', { code: 404, fatal: false });
       expect(tracker.sendError).toHaveBeenCalledWith({
         errorCode: 404,
-        errorMessage: 'Recoverable error',
-        data: errorData
+        errorMessage: undefined,
       });
     });
 
-    it('should handle fatal HLS error', () => {
+    it('should handle HLS error event with details', () => {
       tracker.sendError = jest.fn();
-      const errorData = { code: 500, fatal: true };
-      tracker.onError('error', errorData);
+      tracker.onError('error', { code: 500, details: 'manifestParsingError' });
       expect(tracker.sendError).toHaveBeenCalledWith({
         errorCode: 500,
-        errorMessage: 'Fatal error',
-        data: errorData
+        errorMessage: 'manifestParsingError',
       });
+    });
+
+    it('should not call sendError when error has no code or message', () => {
+      tracker.sendError = jest.fn();
+      tracker.onError('error', {});
+      expect(tracker.sendError).not.toHaveBeenCalled();
     });
 
     it('should handle video element error event', () => {
@@ -470,20 +476,20 @@ describe('HLSTracker', () => {
 
     it('should send buffer start when player is stalled', () => {
       tracker.sendBufferStart = jest.fn();
-      mockHlsInstance.networkState = 2;   // NETWORK_LOADING
-      mockHlsInstance.readyState = 2;     // < HAVE_FUTURE_DATA (3)
-      mockHlsInstance.NETWORK_LOADING = 2;
-      mockHlsInstance.HAVE_FUTURE_DATA = 3;
+      mockVideoElement.networkState = 2;   // NETWORK_LOADING
+      mockVideoElement.readyState = 2;     // < HAVE_FUTURE_DATA (3)
+      mockVideoElement.NETWORK_LOADING = 2;
+      mockVideoElement.HAVE_FUTURE_DATA = 3;
       tracker.onWaiting();
       expect(tracker.sendBufferStart).toHaveBeenCalled();
     });
 
     it('should not send buffer start when player is not stalled', () => {
       tracker.sendBufferStart = jest.fn();
-      mockHlsInstance.networkState = 1;   // not NETWORK_LOADING
-      mockHlsInstance.readyState = 4;
-      mockHlsInstance.NETWORK_LOADING = 2;
-      mockHlsInstance.HAVE_FUTURE_DATA = 3;
+      mockVideoElement.networkState = 1;   // not NETWORK_LOADING
+      mockVideoElement.readyState = 4;
+      mockVideoElement.NETWORK_LOADING = 2;
+      mockVideoElement.HAVE_FUTURE_DATA = 3;
       tracker.onWaiting();
       expect(tracker.sendBufferStart).not.toHaveBeenCalled();
     });

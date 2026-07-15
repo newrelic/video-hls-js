@@ -26,11 +26,11 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   getInstrumentationName() {
-    return this.getPlayerName();
+    return this.getTrackerName();
   }
 
   getInstrumentationVersion() {
-    return this.getPlayerVersion();
+    return this.getTrackerVersion();
   }
 
   getPlayerVersion() {
@@ -291,12 +291,10 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   onError(event, data) {
     // HLS.js error event provides data object with error details
     const errorCode = data?.code;
-    const errorMessage = data?.message || data?.reason || (data?.fatal ? 'Fatal error' : 'Recoverable error');
+    const errorMessage = data?.message || data?.reason || data?.details ;
     if (errorCode || errorMessage) {
-      this.sendError({ errorCode, errorMessage, data });
-    } else {
-      this.sendError({ error: data || event });
-    }
+      this.sendError({ errorCode, errorMessage});
+    } 
   }
 
   onVideoError(e) {
@@ -327,8 +325,8 @@ export default class HLSTracker extends nrvideo.VideoTracker {
 
   onWaiting() {
     if (
-      this.player.networkState === this.player.NETWORK_LOADING &&
-      this.player.readyState < this.player.HAVE_FUTURE_DATA
+      this.tag.networkState === this.tag.NETWORK_LOADING &&
+      this.tag.readyState < this.tag.HAVE_FUTURE_DATA
     ) {
       this.sendBufferStart();
     }
