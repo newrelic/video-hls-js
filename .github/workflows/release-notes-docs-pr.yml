@@ -31,6 +31,9 @@ jobs:
     name: Update public docs
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
       - name: Generate GitHub App token
         id: app-token
         uses: actions/create-github-app-token@v1
@@ -42,15 +45,22 @@ jobs:
 
       - name: Resolve release tag and body
         id: release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             tag="${{ github.event.inputs.tag }}"
           else
             tag="${{ github.event.release.tag_name }}"
           fi
-          body=$(gh release view "${tag}" --repo ${{ env.AGENT_REPO }} --json body --jq '.body')
+          version="${tag#v}"
+          body=$(awk -v ver="${version}" '
+            found && /^## +\[|^# / { exit }
+            found { print }
+            $0 ~ ("^## +\\[" ver "\\]") { found=1 }
+          ' CHANGELOG.md | sed -E 's/ *\(\[[0-9a-f]{6,40}\]\([^)]*\)\) *$//')
+          body=$(printf '%s' "${body}" | sed '/[^[:space:]]/,$!d' | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba}')
+          if [[ -z "${body}" ]]; then
+            body="_No new features, improvements, or bug fixes for this release._"
+          fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "body<<RELEASE_BODY_EOF" >> "$GITHUB_OUTPUT"
           echo "${body}" >> "$GITHUB_OUTPUT"
