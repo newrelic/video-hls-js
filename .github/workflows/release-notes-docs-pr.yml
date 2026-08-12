@@ -52,6 +52,8 @@ jobs:
             tag="${{ github.event.release.tag_name }}"
           fi
           version="${tag#v}"
+          releaseDate=$(grep -m1 "^## \[${version}\]" CHANGELOG.md | \
+            grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
           body=$(awk -v ver="${version}" '
             found && /^## +\[|^# / { exit }
             found { print }
@@ -62,6 +64,7 @@ jobs:
             body="_No new features, improvements, or bug fixes for this release._"
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "releaseDate=${releaseDate}" >> "$GITHUB_OUTPUT"
           echo "body<<RELEASE_BODY_EOF" >> "$GITHUB_OUTPUT"
           echo "${body}" >> "$GITHUB_OUTPUT"
           echo "RELEASE_BODY_EOF" >> "$GITHUB_OUTPUT"
@@ -88,13 +91,17 @@ jobs:
         run: |
           tag="${{ steps.release.outputs.tag }}"
           version="${tag#v}"
-          today=$(date -u "+%Y-%m-%d")
-          fileDate=$(date -u "+%y-%m-%d")
+          releaseDate="${{ steps.release.outputs.releaseDate }}"
+          if [[ -n "${releaseDate}" ]]; then
+            fileDate="${releaseDate:2}"
+          else
+            fileDate=$(date -u "+%y-%m-%d")
+          fi
           releaseFile="${{ env.DOCS_FOLDER }}/${{ env.AGENT_FILE_PREFIX }}-${fileDate}.mdx"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "releaseFile=${releaseFile}" >> "$GITHUB_OUTPUT"
           echo "fileDate=${fileDate}" >> "$GITHUB_OUTPUT"
-          echo "today=${today}" >> "$GITHUB_OUTPUT"
+          echo "releaseDate=${releaseDate}" >> "$GITHUB_OUTPUT"
 
       - name: '[Dry run] Print MDX content'
         if: ${{ github.event.inputs.dry_run == 'true' }}
@@ -107,7 +114,7 @@ jobs:
           printf '%s\n' '---'
           printf '%s\n' 'subject: ${{ env.AGENT_SUBJECT }}'
           printf "title: Media agent for ${{ env.AGENT_NAME }} v%s\n" "${{ steps.mdx.outputs.version }}"
-          printf "releaseDate: '%s'\n" "${{ steps.mdx.outputs.today }}"
+          printf "releaseDate: '%s'\n" "${{ steps.mdx.outputs.releaseDate }}"
           printf "version: %s\n" "${{ steps.mdx.outputs.version }}"
           printf "metaDescription: Release notes for Media agent for ${{ env.AGENT_NAME }} version %s\n" "${{ steps.mdx.outputs.version }}"
           printf '%s\n' 'category: ${{ env.AGENT_NAME }}'
@@ -123,7 +130,7 @@ jobs:
           RELEASE_BODY: ${{ steps.release.outputs.body }}
         run: |
           version="${{ steps.mdx.outputs.version }}"
-          today="${{ steps.mdx.outputs.today }}"
+          releaseDate="${{ steps.mdx.outputs.releaseDate }}"
           fileDate="${{ steps.mdx.outputs.fileDate }}"
           releaseFile="${{ steps.mdx.outputs.releaseFile }}"
           branchName="add-${{ env.AGENT_SLUG }}-release-notes-$(date -u '+%y-%m-%d')"
@@ -138,7 +145,7 @@ jobs:
             printf '%s\n' '---'
             printf '%s\n' 'subject: ${{ env.AGENT_SUBJECT }}'
             printf "title: Media agent for ${{ env.AGENT_NAME }} v%s\n" "${version}"
-            printf "releaseDate: '%s'\n" "${today}"
+            printf "releaseDate: '%s'\n" "${releaseDate}"
             printf "version: %s\n" "${version}"
             printf "metaDescription: Release notes for Media agent for ${{ env.AGENT_NAME }} version %s\n" "${version}"
             printf '%s\n' 'category: ${{ env.AGENT_NAME }}'
