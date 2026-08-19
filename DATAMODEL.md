@@ -72,6 +72,19 @@ An Attribute is a piece of data associated with an event. Attributes provide add
 | instrumentation.name     | Name of the instrumentation collecting the data.                                                                                                   |
 | instrumentation.version  | Agent’s version.                                                                                                                                   |
 
+| timeSinceRequested       | Time (in milliseconds) since the video was requested.                                                                                              |
+| timeSinceStarted         | Time (in milliseconds) since the video started playing.                                                                                            |
+| timeSinceTrackerReady    | Time (in milliseconds) since the tracker was initialized (PLAYER_READY).                                                                           |
+| timeSinceLastHeartbeat   | Time (in milliseconds) since the last heartbeat event.                                                                                             |
+| timeSinceBufferBegin     | Time (in milliseconds) since the last buffer event began.                                                                                          |
+| timeSincePaused          | Time (in milliseconds) since the video was last paused.                                                                                            |
+| timeSinceLastError       | Time (in milliseconds) since the last content error occurred. Only included after an error has occurred.                                            |
+| numberOfVideos           | Number of videos played in this session.                                                                                                           |
+| numberOfErrors           | Number of errors occurred in this session.                                                                                                         |
+| trackerName              | Name of the tracker/agent.                                                                                                                         |
+| trackerVersion           | Version of the tracker/agent.                                                                                                                      |
+| playtimeSinceLastEvent   | Active content playtime (in milliseconds) since the last event. (JS players only)                                                                  |
+
 #### List of possible Video Actions
 
 | Action Name              | Definition                                                                                       |
@@ -174,7 +187,6 @@ An Attribute is a piece of data associated with an event. Attributes provide add
 | contentTitle             | The title of the video.                                                                                                                            |
 | errorName                | Name of the error.                                                                                                                                 |
 | errorCode                | Error code if it's known.                                                                                                                          |
-| backTrace                | Stack trace of the error.                                                                                                                          |
 | isBackgroundEvent        | If the player is hidden by another window.                                                                                                         |
 | contentSrc               | Content source URL.                                                                                                                                |
 | contentCdn               | Content CDN URL.                                                                                                                                   |
