@@ -153,6 +153,27 @@ if (Hls.isSupported()) {
 }
 ```
 
+### Browser Player Setup
+
+Import from the `/browser` subpath — this build includes only the browser agent pipeline and excludes all connected-device code, keeping the bundle lean.
+
+```javascript
+import HLSTracker from '@newrelic/video-hls/browser';
+
+const hls = new Hls();
+hls.loadSource(videoSrc);
+hls.attachMedia(video);
+
+// Initialize tracker after attaching media, using the credentials from the previous step
+const tracker = new HLSTracker(hls, {
+  info: {
+    licenseKey: 'YOUR_LICENSE_KEY',
+    beacon: 'YOUR_BEACON_URL',
+    applicationID: 'YOUR_APP_ID'
+  }
+});
+```
+
 ### Advanced Configuration
 
 ```javascript
