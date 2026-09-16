@@ -36,7 +36,7 @@
     "hls.js": ">=1.0.0"
   },
   "dependencies": {
-    "@newrelic/video-core": "^5.0.1",
+    "@newrelic/video-core": "^5.1.0",
     "terser-webpack-plugin": "^5.6.1"
   },
   "devDependencies": {
