@@ -6,7 +6,7 @@ module.exports = {
   },
   transformIgnorePatterns: ["node_modules/(?!@shotgunjed)/"],
   moduleNameMapper: {
-    "^@newrelic/video-core$": "<rootDir>/jest-shims/nr-video-core.js",
+    "^@newrelic/video-core$": "<rootDir>/node_modules/@newrelic/video-core/__mock__.js",
   },
   testMatch: ["**/__tests__/**/*.js?(x)", "**/?(*.)+(spec|test).js?(x)"],
 };
