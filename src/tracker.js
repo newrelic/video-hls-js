@@ -50,7 +50,7 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   getSrc() {
-    return this.tag.currentSrc;
+    return this.player.url;
   }
 
   isMuted() {
