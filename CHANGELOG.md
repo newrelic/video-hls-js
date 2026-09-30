@@ -1,3 +1,12 @@
+## [2.0.1](https://github.com/newrelic/video-hls-js/compare/v2.0.0...v2.0.1) (2026-09-30)
+
+### Bug fixes
+
+- Fixed `getSrc()` returning the browser's temporary `blob:` URL instead of
+  the actual manifest URL once HLS playback started. The tracker now reads
+  the URL from the underlying Hls.js instance, so the real manifest URL is
+  reported consistently during playback.
+
 ## [2.0.0](https://github.com/newrelic/video-hls-js/compare/v1.0.1...v2.0.0) (2026-09-22)
 
 ### New features
