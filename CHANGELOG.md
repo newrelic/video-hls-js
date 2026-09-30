@@ -1,7 +1,11 @@
-## <small>2.0.1 (2026-09-30)</small>
+## [2.0.1](https://github.com/newrelic/video-hls-js/compare/v2.0.0...v2.0.1) (2026-09-30)
 
-* Merge pull request #16 from newrelic/fix/get-src-blob-url ([c17dfce](https://github.com/newrelic/video-hls-js/commit/c17dfce)), closes [#16](https://github.com/newrelic/video-hls-js/issues/16)
-* fix: return manifest URL from Hls.js instance instead of tag.currentSrc ([2eadfa7](https://github.com/newrelic/video-hls-js/commit/2eadfa7))
+### Bug fixes
+
+- Fixed `getSrc()` returning the browser's temporary `blob:` URL instead of
+  the actual manifest URL once HLS playback started. The tracker now reads
+  the URL from the underlying Hls.js instance, so the real manifest URL is
+  reported consistently during playback.
 
 ## [2.0.0](https://github.com/newrelic/video-hls-js/compare/v1.0.1...v2.0.0) (2026-09-22)
 
