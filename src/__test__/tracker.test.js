@@ -3,6 +3,7 @@ import { version } from '../../package.json';
 import Hls from 'hls.js';
 
 const mockHlsInstance = {
+  url: 'https://example.com/stream.m3u8',
   currentLevel: 0,
   levels: [
     {
@@ -56,6 +57,7 @@ describe('HLSTracker', () => {
 
   beforeEach(() => {
     // Reset all properties that individual tests may mutate
+    mockHlsInstance.url = 'https://example.com/stream.m3u8';
     mockHlsInstance.currentLevel = 0;
     mockHlsInstance.levels = [
       { bitrate: 258157, width: 426, height: 180, name: '180' },
@@ -128,8 +130,9 @@ describe('HLSTracker', () => {
       expect(tracker.getDuration()).toBe(100000);
     });
 
-    it('should return current source', () => {
-      mockVideoElement.currentSrc = 'https://example.com/stream.m3u8';
+    it('should return the manifest URL from the Hls.js instance, not the MSE blob URL on the tag', () => {
+      mockHlsInstance.url = 'https://example.com/stream.m3u8';
+      mockVideoElement.currentSrc = 'blob:https://example.com/c7cefcc0-7114-4055-8e12-ad52f0fbfe16';
       expect(tracker.getSrc()).toBe('https://example.com/stream.m3u8');
     });
 
