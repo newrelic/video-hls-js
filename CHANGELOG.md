@@ -1,3 +1,8 @@
+## <small>2.0.1 (2026-09-30)</small>
+
+* Merge pull request #16 from newrelic/fix/get-src-blob-url ([c17dfce](https://github.com/newrelic/video-hls-js/commit/c17dfce)), closes [#16](https://github.com/newrelic/video-hls-js/issues/16)
+* fix: return manifest URL from Hls.js instance instead of tag.currentSrc ([2eadfa7](https://github.com/newrelic/video-hls-js/commit/2eadfa7))
+
 ## [2.0.0](https://github.com/newrelic/video-hls-js/compare/v1.0.1...v2.0.0) (2026-09-22)
 
 ### New features
