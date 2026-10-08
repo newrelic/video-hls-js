@@ -13,6 +13,10 @@
       "import": "./dist/esm/browser/index.js",
       "require": "./dist/cjs/browser/index.js"
     },
+    "./vega": {
+      "import": "./dist/esm/vega/index.js",
+      "require": "./dist/cjs/vega/index.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -69,6 +73,7 @@
     "dist",
     "src",
     "browser.js",
+    "vega.js",
     "CHANGELOG.md",
     "README.md",
     "!test",
