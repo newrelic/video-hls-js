@@ -35,7 +35,7 @@ export default class VegaTracker extends HLSTracker {
   }
 
   getTrackerName() {
-    return 'vega-hls';
+    return 'hls';
   }
 
   getTrackerVersion() {
