@@ -88,4 +88,27 @@ module.exports = [
     optimization: { minimize: true, minimizer: [terser] },
     plugins: [banner],
   },
+
+  // VEGA ENTRY — resolve.alias rewires @newrelic/video-core -> vega subpath
+  // CJS
+  {
+    entry: './src/entry-vega.js',
+    output: { path: path.resolve(__dirname, './dist/cjs/vega'), filename: 'index.js', libraryTarget: 'commonjs2' },
+    resolve: { alias: { '@newrelic/video-core$': require.resolve('@newrelic/video-core/vega') } },
+    devtool: 'source-map',
+    module: { rules: [babelCjs] },
+    optimization: { minimize: true, minimizer: [terser] },
+    plugins: [banner],
+  },
+  // ESM
+  {
+    entry: './src/entry-vega.js',
+    output: { path: path.resolve(__dirname, './dist/esm/vega'), filename: 'index.js', library: { type: 'module' } },
+    resolve: { alias: { '@newrelic/video-core$': require.resolve('@newrelic/video-core/vega') } },
+    experiments: { outputModule: true },
+    devtool: 'source-map',
+    module: { rules: [babelEsm] },
+    optimization: { minimize: true, minimizer: [terser] },
+    plugins: [banner],
+  },
 ];
