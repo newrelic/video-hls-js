@@ -1,3 +1,9 @@
+## 2.1.0 (2026-10-26)
+- **chore: add sec type to releaserc (NR-619788)**
+- **chore: update release notes workflow to new docs standards (NR-619788)**
+- **feat: Update Tracker name for vega**
+- **fix: Vega Tracker support**
+
 ## [2.0.1](https://github.com/newrelic/video-hls-js/compare/v2.0.0...v2.0.1) (2026-09-30)
 
 ### Bug fixes
