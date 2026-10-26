@@ -123,42 +123,12 @@ Before initializing the tracker, obtain your New Relic configuration:
 2. Navigate to the video agent onboarding flow
 3. Copy your credentials: `licenseKey`, `beacon`, and `applicationID`
 
-### Basic Setup
-
-```javascript
-import HLSTracker from '@newrelic/video-hls';
-
-// Configure tracker with credentials from one.newrelic.com
-const options = {
-  info: {
-    licenseKey: 'YOUR_LICENSE_KEY',
-    beacon: 'YOUR_BEACON_URL',
-    applicationID: 'YOUR_APP_ID'
-  }
-};
-
-const video = document.getElementById('video');
-const videoSrc = 'https://your-hls-stream.m3u8';
-
-if (Hls.isSupported()) {
-  const hls = new Hls();
-  hls.loadSource(videoSrc);
-  hls.attachMedia(video);
-
-  // Initialize tracker after attaching media
-  const tracker = new HLSTracker(hls, options);
-} else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-  // Native HLS support (Safari) — no tracker needed
-  video.src = videoSrc;
-}
-```
-
 ### Browser Player Setup
 
 Import from the `/browser` subpath — this build includes only the browser agent pipeline and excludes all connected-device code, keeping the bundle lean.
 
 ```javascript
-import HLSTracker from '@newrelic/video-hls/browser';
+import { HLSTracker } from '@newrelic/video-hls/browser';
 
 const hls = new Hls();
 hls.loadSource(videoSrc);
@@ -192,6 +162,79 @@ const options = {
 
 const tracker = new HLSTracker(hls, options);
 ```
+
+### Vega Setup (Fire TV)
+
+For deployments targeting Amazon Vega or Fire TV (Kepler runtime), import from the `/vega` subpath and use `VegaTracker`. The `info` object uses `applicationToken` and `endpoint` specific to the Vega pipeline, plus an optional `deviceInfo` block carrying runtime device identity:
+
+**Obtain your application token:**
+
+1. Log in to [one.newrelic.com](https://one.newrelic.com)
+2. Navigate to the video agent onboarding flow
+3. Copy your `applicationToken` and your `accountId`
+
+```javascript
+import { VegaTracker } from '@newrelic/video-hls/vega';
+import {
+  getDeviceId, getSystemVersion, getModel, getBrand,
+  getBuildIdSync, getBuildNumber,
+} from '@amazon-devices/react-native-device-info';
+
+const deviceInfo = {
+  uuid:               getDeviceId(),
+  osVersion:          getSystemVersion(),
+  deviceModel:        getModel(),
+  deviceManufacturer: getBrand(),
+  osBuild:            getBuildIdSync(),    // OS image build
+  appBuild:           getBuildNumber(),    // app build number
+  architecture:       'aarch64',
+};
+
+const tracker = useRef(null);
+
+// player.current        = your HlsJsPlayer wrapper
+// player.current.player = hls.js instance 
+
+// Initialize VegaTracker inside onSurfaceViewCreated BEFORE calling play(),
+// so the tracker's listeners are registered before the 'play' event fires.
+const onSurfaceViewCreated = (surfaceHandle) => {
+  videoPlayer.current?.setSurfaceHandle(surfaceHandle);
+
+  tracker.current = new VegaTracker(player.current.player, {
+    info: {
+      accountId:        'YOUR_ACCOUNT_ID',
+      applicationToken: 'YOUR_NRMA_TOKEN',   // begins "AA…-NRMA"
+      endpoint:         'US',                 // 'US' | 'EU' | 'staging' | 'GOV' | 'JP'
+      deviceInfo,                             // optional but recommended
+    },
+    config: { qoeIntervalFactor: 1 },
+    customData: { contentTitle: 'Vega HLS Stream' },
+  });
+  tracker.current.setUserId('YOUR_USER_ID');
+
+  videoPlayer.current?.play();
+};
+
+// Dispose the tracker when content ends to release event listeners.
+const onEnded = () => {
+  tracker.current?.dispose();
+  tracker.current = null;
+};
+```
+
+#### `info.deviceInfo` field reference
+
+All sub-fields optional — missing values fall back to the defaults baked into the SDK. Extra fields are ignored.
+
+| Field | Recommended source | Falls back to |
+| --- | --- | --- |
+| `uuid` | `getDeviceId()` | `"00000000-0000-0000-0000-000000000000"` |
+| `osVersion` | `getSystemVersion()` | `"1.0"` |
+| `deviceModel` | `getModel()` | `"VegaDevice"` |
+| `deviceManufacturer` | `getBrand()` | `"Amazon"` |
+| `osBuild` | `getBuildIdSync()` — OS image build | `"1"` |
+| `appBuild` | `getBuildNumber()` — app build number | `"1"` |
+| `architecture` | `'aarch64'` | `"aarch64"` |
 
 ## Best Practices
 
