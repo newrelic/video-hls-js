@@ -1,3 +1,8 @@
+## <small>2.1.1 (2026-10-30)</small>
+- **chore: fix audit vulnerabilities in lockfile**
+- **chore: pin dependencies and devDependencies to exact versions**
+- **fix: pin @newrelic/video-core to 5.1.1**
+
 ## [2.1.0](https://github.com/newrelic/video-hls-js/compare/v2.0.1...v2.1.0) (2026-10-26)
 
 ### New features
