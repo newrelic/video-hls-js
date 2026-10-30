@@ -1,7 +1,9 @@
-## <small>2.1.1 (2026-10-30)</small>
-- **chore: fix audit vulnerabilities in lockfile**
-- **chore: pin dependencies and devDependencies to exact versions**
-- **fix: pin @newrelic/video-core to 5.1.1**
+## [2.1.1](https://github.com/newrelic/video-hls-js/compare/v2.1.0...v2.1.1) (2026-10-30)
+
+### Changed
+
+- **Video Core:** Updated the bundled `@newrelic/video-core` dependency to v5.1.1 and pinned it to this exact version (previously `^5.1.0`), so every build uses the same core release.
+- **Dependency pinning:** `dependencies` and `devDependencies` are now pinned to the exact versions already resolved in `package-lock.json`, so a fresh install no longer picks up newly published releases of build tooling.
 
 ## [2.1.0](https://github.com/newrelic/video-hls-js/compare/v2.0.1...v2.1.0) (2026-10-26)
 
