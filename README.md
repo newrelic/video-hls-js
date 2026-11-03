@@ -436,6 +436,23 @@ if (Hls.isSupported()) {
 }
 ```
 
+## Google DAI (Server-Side Ad Insertion)
+
+Ad tracking is opt-in. Set `config.ad.type` and hand the DAI `StreamManager` to the tracker:
+
+```js
+import { HLSTracker, AD_TRACKING } from '@newrelic/video-hls';
+
+const streamManager = new google.ima.dai.api.StreamManager(videoEl);
+const tracker = new HLSTracker(hls, {
+  info: { /* ... */ },
+  config: { ad: { type: AD_TRACKING.SSAI.DAI } }, // UMD: 'ssai:dai'
+});
+tracker.setStreamManager(streamManager);
+```
+
+The tracker forwards ID3 timed metadata (`FRAG_PARSING_METADATA`) to the `StreamManager`. If your app already does this, set `config.ad.processId3: false` to avoid duplicates. See [samples/dai.html](./samples/dai.html) (`?type=live` or `?type=vod`).
+
 ## Bitrate Metrics
 
 The tracker captures four distinct bitrate metrics providing complete quality analysis:
