@@ -1,12 +1,65 @@
 import nrvideo from '@newrelic/video-core';
 import { version } from '../package.json';
+import DaiAdsTracker from './ads/dai';
+
+/**
+ * Ad tracking mode, set via options.config.ad.type.
+ * SSAI.DAI — Google DAI (google.ima.dai.api). Hand the StreamManager over with
+ * tracker.setStreamManager(). If config.ad is not set, no ad tracking runs.
+ */
+export const AD_TRACKING = {
+  SSAI: Object.freeze({
+    DAI: 'ssai:dai',
+  }),
+};
 
 export default class HLSTracker extends nrvideo.VideoTracker {
   constructor(player, options) {
     super(player, options);
+    this.adTracking = options?.config?.ad?.type || null;
     nrvideo.Core.addTracker(this, options);
     this.options = options;
 
+  }
+
+  /**
+   * Starts Google DAI ad tracking. Call after creating the StreamManager.
+   * Requires config.ad.type = AD_TRACKING.SSAI.DAI.
+   * ID3 timed metadata is forwarded to the StreamManager unless
+   * config.ad.processId3 === false (use when the app already forwards it).
+   * @param {google.ima.dai.api.StreamManager} streamManager
+   */
+  setStreamManager(streamManager) {
+    if (this.adTracking !== AD_TRACKING.SSAI.DAI) {
+      nrvideo.Log.warn(
+        'HLSTracker.setStreamManager: config.ad.type is not AD_TRACKING.SSAI.DAI — ignoring.',
+      );
+      return;
+    }
+    if (!streamManager) return;
+
+    const daiTracker = new DaiAdsTracker(this.player, { tag: this.tag });
+    daiTracker.setStreamManager(streamManager);
+    this.setAdsTracker(daiTracker);
+
+    this.unregisterId3Forwarding();
+    if (this.options?.config?.ad?.processId3 !== false) {
+      const HlsEvents = this.player.constructor.Events;
+      this._onId3 = (event, data) => {
+        data?.samples?.forEach((sample) => {
+          streamManager.processMetadata('ID3', sample.data, sample.pts);
+        });
+      };
+      this.player.on(HlsEvents.FRAG_PARSING_METADATA, this._onId3);
+    }
+  }
+
+  unregisterId3Forwarding() {
+    if (this._onId3) {
+      const HlsEvents = this.player?.constructor?.Events;
+      if (HlsEvents) this.player.off(HlsEvents.FRAG_PARSING_METADATA, this._onId3);
+      this._onId3 = null;
+    }
   }
   setPlayer(player, tag) {
     if (!tag && player.media) tag = player.media;
@@ -188,6 +241,8 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     if (!this.player || !this.tag) return;
 
     const HlsEvents = this.player.constructor.Events;
+
+    this.unregisterId3Forwarding();
 
     // Unregister HLS.js events using stored bound methods
     if (this._onQualityChange) {
