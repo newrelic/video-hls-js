@@ -445,3 +445,100 @@ describe('DaiTracker — cue points, metadata, getters', () => {
     expect(DaiTracker.isUsing(null)).toBe(false);
   });
 });
+
+// The shared @newrelic/video-core mock lets every send* through, so it cannot
+// catch events the real base class silently swallows. These tests replay
+// video-core 5.1.1's actual gating — goStart() requires isRequested, and both
+// goEnd() and goAdBreakEnd() clear it — which is what hid the bug where only
+// the first ad of a session reported a start.
+describe('DaiTracker — against video-core\'s real event gating', () => {
+  function gatedTracker() {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    const state = { isRequested: false, isStarted: false, isAdBreak: false };
+    const reported = [];
+
+    tracker.sendRequest = () => {
+      if (state.isRequested) return;
+      state.isRequested = true;
+      reported.push('AD_REQUEST');
+    };
+    tracker.sendStart = () => {
+      if (!state.isRequested || state.isStarted) return;
+      state.isStarted = true;
+      reported.push('AD_START');
+    };
+    tracker.sendEnd = () => {
+      if (!state.isRequested) return;
+      state.isRequested = false;
+      state.isStarted = false;
+      reported.push('AD_END');
+    };
+    tracker.sendAdBreakStart = () => {
+      if (state.isAdBreak) return;
+      state.isAdBreak = true;
+      reported.push('AD_BREAK_START');
+    };
+    tracker.sendAdBreakEnd = () => {
+      if (!state.isAdBreak) return;
+      state.isAdBreak = false;
+      state.isRequested = false;
+      reported.push('AD_BREAK_END');
+    };
+    tracker.sendAdQuartile = ({ quartile }) => reported.push(`AD_QUARTILE${quartile}`);
+
+    return { sm, tracker, reported };
+  }
+
+  function playAd(sm, adId) {
+    sm._emit(StreamEventType.STARTED, {
+      getAd: () => ({
+        getAdId: () => adId,
+        getAdPodInfo: () => ({ getPodIndex: () => 0, getTotalAds: () => 2 }),
+      }),
+    });
+    sm._emit(StreamEventType.FIRST_QUARTILE, {});
+    sm._emit(StreamEventType.COMPLETE, {});
+  }
+
+  it('reports a start and an end for every ad in a multi-ad pod', () => {
+    const { sm, reported } = gatedTracker();
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    playAd(sm, 'ad1');
+    playAd(sm, 'ad2');
+    sm._emit(StreamEventType.AD_BREAK_ENDED, {});
+
+    expect(reported.filter((e) => e === 'AD_START')).toHaveLength(2);
+    expect(reported.filter((e) => e === 'AD_END')).toHaveLength(2);
+    expect(reported).not.toContain('AD_QUARTILE1_ORPHAN');
+  });
+
+  it('still reports ads in a later break after the first break ended', () => {
+    const { sm, reported } = gatedTracker();
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    playAd(sm, 'ad1');
+    sm._emit(StreamEventType.AD_BREAK_ENDED, {});
+
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    playAd(sm, 'ad2');
+    sm._emit(StreamEventType.AD_BREAK_ENDED, {});
+
+    expect(reported).toEqual([
+      'AD_BREAK_START', 'AD_REQUEST', 'AD_START', 'AD_QUARTILE1', 'AD_END', 'AD_BREAK_END',
+      'AD_BREAK_START', 'AD_REQUEST', 'AD_START', 'AD_QUARTILE1', 'AD_END', 'AD_BREAK_END',
+    ]);
+  });
+
+  it('never emits a quartile for an ad that never reported a start', () => {
+    const { sm, reported } = gatedTracker();
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    playAd(sm, 'ad1');
+    playAd(sm, 'ad2');
+    sm._emit(StreamEventType.AD_BREAK_ENDED, {});
+
+    // One quartile per ad, each preceded by that ad's own start.
+    const starts = reported.filter((e) => e === 'AD_START').length;
+    const quartiles = reported.filter((e) => e.startsWith('AD_QUARTILE')).length;
+    expect(quartiles).toBe(starts);
+  });
+});
