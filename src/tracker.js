@@ -41,12 +41,29 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     return version;
   }
 
+  /**
+   * Content playhead, in ms. With server-side ad insertion the media element's
+   * currentTime is STREAM time, which includes every ad played so far, so
+   * reporting it directly overstates content progress by the cumulative ad
+   * duration. An ads tracker that can convert is asked to; anything else — no
+   * ads, or an ad framework without a conversion — reports the clock as-is.
+   */
   getPlayhead() {
-    return this.tag.currentTime * 1000;
+    return this.toContentTime(this.tag.currentTime) * 1000;
   }
 
+  toContentTime(streamTime) {
+    const converted = this.adsTracker?.contentTimeForStreamTime?.(streamTime);
+    return typeof converted === 'number' && Number.isFinite(converted)
+      ? converted
+      : streamTime;
+  }
+
+  // Same stream-vs-content distinction as getPlayhead: a stitched VOD's
+  // duration includes every inserted ad. Infinity (live) passes through, since
+  // Number.isFinite rejects the conversion.
   getDuration() {
-    return this.tag.duration * 1000;
+    return this.toContentTime(this.tag.duration) * 1000;
   }
 
   getSrc() {

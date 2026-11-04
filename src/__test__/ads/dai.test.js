@@ -13,6 +13,14 @@ jest.mock('@newrelic/video-core', () => {
     isAd() { return this._isAd; }
     setIsAd(v) { this._isAd = v; }
     registerListeners() {}
+    // Mirrors the real base (videotracker.ts:212-218): it nulls player and tag,
+    // which is precisely what made a disposed tracker throw.
+    dispose() {
+      this.unregisterListeners();
+      this.player = null;
+      this.tag = null;
+    }
+    unregisterListeners() {}
     sendRequest() {}
     sendDownload() {}
     sendError() {}
@@ -70,18 +78,27 @@ beforeEach(() => {
   global.google = { ima: { dai: { api: { StreamEvent: { Type: StreamEventType } } } } };
 });
 
+// Mirrors the LIVE StreamManager surface, enumerated from the real SDK:
+//   addEventListener, clicked, contentTimeForStreamTime, dispatchEvent, focus,
+//   getAdSkippableState, listen, loadStreamMetadata, onTimedMetadata,
+//   previousCuePointForStreamTime, processMetadata, removeEventListener,
+//   replaceAdTagParameters, requestStream, reset, setClickElement, skipAd,
+//   streamTimeForContentTime
+// Note there is NO getStreamTime: an earlier version of this fixture invented
+// one, which hid the fact that getPlayhead() always took its fallback path and
+// that isUsing() could never match a real StreamManager.
 function createMockStreamManager() {
   const listeners = {};
   return {
     addEventListener: jest.fn((type, cb) => { listeners[type] = cb; }),
     removeEventListener: jest.fn((type) => { delete listeners[type]; }),
-    getStreamTime: jest.fn(() => 12.3),
+    contentTimeForStreamTime: jest.fn((streamTime) => streamTime),
     _emit(type, event) { if (listeners[type]) listeners[type](event); },
   };
 }
 
-function createMockTag() {
-  return { currentTime: 3, duration: 120, muted: false };
+function createMockTag(currentTime = 3) {
+  return { currentTime, duration: 120, muted: false };
 }
 
 describe('DaiTracker — construction & lifecycle', () => {
@@ -108,6 +125,25 @@ describe('DaiTracker — construction & lifecycle', () => {
     // And it must stay inert rather than half-wired.
     expect(() => tracker.unregisterListeners()).not.toThrow();
     expect(tracker.isAdPlaying()).toBe(false);
+  });
+
+  // video-core's disposeAdsTracker() calls dispose() — which nulls player and
+  // tag — but never clears this.adsTracker. So after setAdsTracker(null) the
+  // content guard still consults a disposed ads tracker, and a getPlayhead()
+  // on it threw a TypeError straight out of the host page's event handler.
+  it('stays inert after being disposed instead of throwing', () => {
+    const sm = createMockStreamManager();
+        const tracker = new DaiTracker(sm, { tag: createMockTag(5) });
+    sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
+      getStreamData: () => ({ cuepoints: [{ start: 0, end: 10.01, played: false }] }),
+    });
+    expect(tracker.isAdPlaying()).toBe(true);
+
+    tracker.dispose();
+
+    expect(() => tracker.isAdPlaying()).not.toThrow();
+    expect(tracker.isAdPlaying()).toBe(false);
+    expect(() => tracker.getPlayhead()).not.toThrow();
   });
 
   it('removes all listeners on unregisterListeners()', () => {
@@ -140,7 +176,7 @@ describe('DaiTracker — construction & lifecycle', () => {
   });
 
   // The live DAI StreamEvent has no getAdBreak() — only getAd, getAdUi,
-  // getCustomAdUi, getStreamData, preventDefault — so a break opens with no
+  // getCustomAdUi, getStreamData — so a break opens with no
   // detail of its own and is backfilled from its first ad's pod info.
   it('AD_BREAK_STARTED opens a break and calls sendAdBreakStart()', () => {
     const sm = createMockStreamManager();
@@ -398,8 +434,7 @@ describe('DaiTracker — construction & lifecycle', () => {
   // timeupdate. The cue points, known from CUEPOINTS_CHANGED, can.
   it('knows an ad is playing inside a cue point window before the break is announced', () => {
     const sm = createMockStreamManager();
-    sm.getStreamTime = () => 0.2;
-    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+        const tracker = new DaiTracker(sm, { tag: createMockTag(0.2) });
     sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
       getStreamData: () => ({ cuepoints: [{ start: 0, end: 10.01, played: false }] }),
     });
@@ -430,8 +465,7 @@ describe('DaiTracker — construction & lifecycle', () => {
 
   it('keeps cue points that arrived before the stream they belong to loaded', () => {
     const sm = createMockStreamManager();
-    sm.getStreamTime = () => 5;
-    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+        const tracker = new DaiTracker(sm, { tag: createMockTag(5) });
     startStream(sm, 'https://x/master.m3u8');
     expect(tracker.getAdCuePoints()).toHaveLength(1);
     expect(tracker.isAdPlaying()).toBe(true);
@@ -439,8 +473,7 @@ describe('DaiTracker — construction & lifecycle', () => {
 
   it('keeps the second stream\'s cue points too, not just the first\'s', () => {
     const sm = createMockStreamManager();
-    sm.getStreamTime = () => 5;
-    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+        const tracker = new DaiTracker(sm, { tag: createMockTag(5) });
     startStream(sm, 'https://x/master.m3u8');
     startStream(sm, 'https://y/master.m3u8');
     expect(tracker.getAdCuePoints()).toHaveLength(1);
@@ -449,8 +482,7 @@ describe('DaiTracker — construction & lifecycle', () => {
 
   it('forgets the previous stream\'s cue points when an ad-free stream follows', () => {
     const sm = createMockStreamManager();
-    sm.getStreamTime = () => 5;
-    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+        const tracker = new DaiTracker(sm, { tag: createMockTag(5) });
     startStream(sm, 'https://x/master.m3u8');
     expect(tracker.isAdPlaying()).toBe(true);
 
@@ -462,8 +494,7 @@ describe('DaiTracker — construction & lifecycle', () => {
 
   it('is not confused by the mid-stream CUEPOINTS_CHANGED the SDK also fires', () => {
     const sm = createMockStreamManager();
-    sm.getStreamTime = () => 5;
-    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+        const tracker = new DaiTracker(sm, { tag: createMockTag(5) });
     startStream(sm, 'https://x/master.m3u8');
     // Fires again at break start to update played flags.
     sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
@@ -489,8 +520,7 @@ describe('DaiTracker — construction & lifecycle', () => {
 
   it('does not treat an already-played cue point window as an ad', () => {
     const sm = createMockStreamManager();
-    sm.getStreamTime = () => 5;
-    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+        const tracker = new DaiTracker(sm, { tag: createMockTag(5) });
     // Seeking back into a watched pre-roll: the window is marked played, and
     // no ad telemetry will accompany it, so content must keep reporting.
     sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
@@ -501,8 +531,7 @@ describe('DaiTracker — construction & lifecycle', () => {
 
   it('knows content is playing once the stream time leaves every cue point window', () => {
     const sm = createMockStreamManager();
-    sm.getStreamTime = () => 42;
-    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+        const tracker = new DaiTracker(sm, { tag: createMockTag(42) });
     sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
       getStreamData: () => ({ cuepoints: [{ start: 0, end: 10.01, played: true }] }),
     });
@@ -511,8 +540,7 @@ describe('DaiTracker — construction & lifecycle', () => {
 
   it('reports an ad is playing whenever a break is open, cue points or not', () => {
     const sm = createMockStreamManager();
-    sm.getStreamTime = () => 500;
-    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+        const tracker = new DaiTracker(sm, { tag: createMockTag(500) });
     sm._emit(StreamEventType.AD_BREAK_STARTED, {});
     expect(tracker.isAdPlaying()).toBe(true);
   });
@@ -792,17 +820,46 @@ describe('DaiTracker — cue points, metadata, getters', () => {
     expect(subscribed).not.toContain(StreamEventType.TIMED_METADATA);
   });
 
-  it('getPlayhead() uses streamManager.getStreamTime() when available', () => {
+  // Stream time comes from the media element: under SSAI the stitched stream's
+  // own clock is the stream timeline, and the live StreamManager has no
+  // getStreamTime() to ask.
+  it('getPlayhead() reports stream time from the media element, in ms', () => {
     const sm = createMockStreamManager();
-    const tracker = new DaiTracker(sm, { tag: createMockTag() });
-    expect(tracker.getPlayhead()).toBe(12300); // 12.3 * 1000, from createMockStreamManager
+    const tracker = new DaiTracker(sm, { tag: createMockTag(12.3) });
+    expect(tracker.getPlayhead()).toBe(12300);
   });
 
-  it('getPlayhead() falls back to tag.currentTime when getStreamTime throws', () => {
+  // The content tracker asks for this so it can report contentPlayhead in
+  // content time rather than stream time.
+  it('converts stream time to content time via the StreamManager', () => {
     const sm = createMockStreamManager();
-    sm.getStreamTime = jest.fn(() => { throw new Error('not ready'); });
+    sm.contentTimeForStreamTime = jest.fn((streamTime) => streamTime - 10);
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
-    expect(tracker.getPlayhead()).toBe(3000); // tag.currentTime (3) * 1000
+    expect(tracker.contentTimeForStreamTime(30)).toBe(20);
+    expect(sm.contentTimeForStreamTime).toHaveBeenCalledWith(30);
+  });
+
+  it('returns undefined from the conversion when the SDK cannot do it', () => {
+    const sm = createMockStreamManager();
+    delete sm.contentTimeForStreamTime;
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    expect(tracker.contentTimeForStreamTime(30)).toBeUndefined();
+  });
+
+  it('does not throw from the conversion after being disposed', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    tracker.dispose();
+    expect(() => tracker.contentTimeForStreamTime(30)).not.toThrow();
+    expect(tracker.contentTimeForStreamTime(30)).toBeUndefined();
+  });
+
+  it('getPlayhead() does not consult the StreamManager', () => {
+    const sm = createMockStreamManager();
+    sm.getStreamTime = jest.fn();
+    const tracker = new DaiTracker(sm, { tag: createMockTag(7) });
+    expect(tracker.getPlayhead()).toBe(7000);
+    expect(sm.getStreamTime).not.toHaveBeenCalled();
   });
 
   it('getStreamType() infers "live" from Infinity duration, "vod" otherwise', () => {
@@ -827,16 +884,43 @@ describe('DaiTracker — cue points, metadata, getters', () => {
     expect(tracker.getRenditionBitrate()).toBe(512000);
   });
 
+  // The stitched stream is decoded by the same hls.js instance during an ad, so
+  // rendition comes from the content tracker exactly as bitrate does. These
+  // returned a hardcoded null while getBitrate delegated.
+  it('getRenditionHeight/Width delegate to the content tracker', () => {
+    const sm = createMockStreamManager();
+    const contentTracker = {
+      getBitrate: () => 512000,
+      getRenditionHeight: () => 720,
+      getRenditionWidth: () => 1280,
+      getRenditionName: () => '720p',
+    };
+    const tracker = new DaiTracker(sm, { tag: createMockTag(), contentTracker });
+    expect(tracker.getRenditionHeight()).toBe(720);
+    expect(tracker.getRenditionWidth()).toBe(1280);
+    expect(tracker.getRenditionName()).toBe('720p');
+  });
+
+  it('rendition getters return null without a content tracker', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    expect(tracker.getRenditionHeight()).toBeNull();
+    expect(tracker.getRenditionWidth()).toBeNull();
+    expect(tracker.getRenditionName()).toBeNull();
+  });
+
   it('getBitrate() returns null when no contentTracker is provided', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
     expect(tracker.getBitrate()).toBeNull();
   });
 
-  it('DaiTracker.isUsing() detects a StreamManager-shaped object', () => {
-    expect(DaiTracker.isUsing(createMockStreamManager())).toBe(true);
-    expect(DaiTracker.isUsing({})).toBe(false);
-    expect(DaiTracker.isUsing(null)).toBe(false);
+  // isUsing() was removed: it had no consumers (hls.js has no tech
+  // auto-detection, unlike the video.js trackers), and it tested for a
+  // getStreamTime() the real StreamManager does not have — so it would have
+  // returned false for the very object it was meant to detect.
+  it('does not expose an isUsing() detector', () => {
+    expect(DaiTracker.isUsing).toBeUndefined();
   });
 });
 

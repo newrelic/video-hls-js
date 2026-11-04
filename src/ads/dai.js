@@ -20,10 +20,6 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     this.cuePoints = [];
   }
 
-  static isUsing(streamManager) {
-    return typeof streamManager?.getStreamTime === 'function';
-  }
-
   registerListeners() {
     // `typeof` first: optional chaining still throws a ReferenceError on an
     // identifier that was never declared, which is exactly the case when the
@@ -263,7 +259,8 @@ export default class DaiTracker extends nrvideo.VideoTracker {
 
   /**
    * The DAI StreamEvent exposes no ad-break accessor (verified against the live
-   * SDK: only getAd / getAdUi / getCustomAdUi / getStreamData / preventDefault),
+   * SDK, StreamEvent.prototype is only getAd / getAdUi / getCustomAdUi /
+   * getStreamData),
    * so nothing about the break is knowable at AD_BREAK_STARTED. Both fields are
    * filled from the first ad's pod info in onAdStarted. Must stay non-null —
    * HLSTracker's content guard treats this object as "a break is in progress".
@@ -458,6 +455,12 @@ export default class DaiTracker extends nrvideo.VideoTracker {
    * pre-roll can still report CONTENT_START a moment early.
    */
   isAdPlaying() {
+    // video-core's disposeAdsTracker() nulls this tracker's player and tag but
+    // leaves the parent's adsTracker reference in place, so the content guard
+    // keeps calling in after setAdsTracker(null). A disposed tracker is not
+    // playing anything.
+    if (!this.player && !this.tag) return false;
+
     if (this.adBreakData) return true;
 
     const cuePoints = this.cuePoints;
@@ -491,11 +494,36 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     return this.cuePoints;
   }
 
+  /**
+   * Stream time, in ms. Under SSAI the stitched stream's own clock IS the
+   * stream timeline, so the media element is the source of truth.
+   *
+   * There is deliberately no StreamManager call here: the live SDK exposes no
+   * getStreamTime(). Its time API is contentTimeForStreamTime() /
+   * streamTimeForContentTime(), both of which take a time rather than
+   * reporting the current one. An earlier version called a nonexistent
+   * getStreamTime() and silently fell back to this on every read.
+   *
+   * tag is null on a disposed tracker, and this runs from the content tracker's
+   * event handlers, so it must not throw.
+   */
   getPlayhead() {
+    return (this.tag?.currentTime ?? 0) * 1000;
+  }
+
+  /**
+   * Stream time to content time, for the content tracker's playhead and
+   * duration. Returns undefined when the SDK cannot convert — including on a
+   * disposed tracker — so the caller keeps reporting stream time rather than
+   * a wrong number.
+   */
+  contentTimeForStreamTime(streamTime) {
     try {
-      return this.player.getStreamTime() * 1000;
+      const contentTime = this.player?.contentTimeForStreamTime?.(streamTime);
+      return typeof contentTime === 'number' ? contentTime : undefined;
     } catch (error) {
-      return this.tag.currentTime * 1000;
+      nrvideo.Log.warn('DaiTracker: Failed to convert stream time', error);
+      return undefined;
     }
   }
 
@@ -503,22 +531,26 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     return this.tag.muted;
   }
 
-  getRenditionHeight() {
-    return null;
-  }
-
-  getRenditionWidth() {
-    return null;
-  }
-
   // The stitched stream is decoded by the same hls.js instance during ads, so
-  // quality data lives on the content tracker, not the StreamManager.
+  // all quality data lives on the content tracker, not the StreamManager.
   getBitrate() {
     return this.contentTracker?.getBitrate() ?? null;
   }
 
   getRenditionBitrate() {
     return this.contentTracker?.getBitrate() ?? null;
+  }
+
+  getRenditionHeight() {
+    return this.contentTracker?.getRenditionHeight?.() ?? null;
+  }
+
+  getRenditionWidth() {
+    return this.contentTracker?.getRenditionWidth?.() ?? null;
+  }
+
+  getRenditionName() {
+    return this.contentTracker?.getRenditionName?.() ?? null;
   }
 
   isLiveStream() {
