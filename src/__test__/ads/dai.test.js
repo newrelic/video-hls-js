@@ -164,6 +164,32 @@ describe('DaiTracker — construction & lifecycle', () => {
 
   // The break's details are only known once its first ad has been seen, so the
   // end event is the one that can actually carry them to the backend.
+  // `position` is internal bookkeeping: video-core already publishes it as
+  // adPosition via getAdPosition(), so sending it too would ship two differently
+  // named copies of the same value.
+  it('does not ship an internal position key alongside adPosition', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    jest.spyOn(tracker, 'sendAdBreakStart');
+    jest.spyOn(tracker, 'sendAdBreakEnd');
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    sm._emit(StreamEventType.STARTED, {
+      getAd: () => ({
+        getAdId: () => 'ad1',
+        getAdPodInfo: () => ({ getPodIndex: () => 0, getTotalAds: () => 1 }),
+      }),
+    });
+    // adPosition still reaches the backend through the normal getter, while the
+    // ad is live.
+    expect(tracker.getAdPosition()).toBe('pre');
+    sm._emit(StreamEventType.AD_BREAK_ENDED, {});
+
+    for (const spy of [tracker.sendAdBreakStart, tracker.sendAdBreakEnd]) {
+      const att = spy.mock.calls[0][0] ?? {};
+      expect(att).not.toHaveProperty('position');
+    }
+  });
+
   it('AD_BREAK_ENDED reports the backfilled break details', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
@@ -176,9 +202,7 @@ describe('DaiTracker — construction & lifecycle', () => {
     });
     jest.spyOn(tracker, 'sendAdBreakEnd');
     sm._emit(StreamEventType.AD_BREAK_ENDED, {});
-    expect(tracker.sendAdBreakEnd).toHaveBeenCalledWith(
-      expect.objectContaining({ adCount: 2, position: 'pre' })
-    );
+    expect(tracker.sendAdBreakEnd).toHaveBeenCalledWith({ adCount: 2 });
   });
 
   it('AD_PERIOD_STARTED with no current break falls back to starting a break', () => {
@@ -338,50 +362,78 @@ describe('DaiTracker — construction & lifecycle', () => {
   // cuePoints gates content events since the pre-roll guard was added, so a
   // list left over from a previous stream would treat real content as an ad.
   // CUEPOINTS_CHANGED never fires for an ad-free stream, so LOADED must reset.
-  function loadStream(sm, url) {
+  // Verified live event order, per stream:
+  //   STREAM_INITIALIZED -> CUEPOINTS_CHANGED -> LOADED -> ... -> CUEPOINTS_CHANGED
+  // Cue points arrive BEFORE their own LOADED, and again mid-stream when the
+  // played flags update. So LOADED is the wrong reset point under any key, and
+  // a "did cue points arrive" flag is defeated by the mid-stream event.
+  // STREAM_INITIALIZED is the only point that precedes a stream's cue points.
+  function startStream(sm, url, { withCuePoints = true } = {}) {
+    sm._emit(StreamEventType.STREAM_INITIALIZED, {});
+    if (withCuePoints) {
+      sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
+        getStreamData: () => ({ cuepoints: [{ start: 0, end: 10.01, played: false }] }),
+      });
+    }
     sm._emit(StreamEventType.LOADED, {
       getStreamData: () => ({ streamId: url, url, cuepoints: null }),
     });
   }
 
-  // The live SDK fires CUEPOINTS_CHANGED *before* LOADED, so a blanket reset on
-  // LOADED would throw away the cue points belonging to the stream being loaded
-  // — and with them the pre-roll protection they exist to provide.
   it('keeps cue points that arrived before the stream they belong to loaded', () => {
     const sm = createMockStreamManager();
     sm.getStreamTime = () => 5;
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
-    sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
-      getStreamData: () => ({ cuepoints: [{ start: 0, end: 10.01, played: false }] }),
-    });
-    loadStream(sm, 'https://x/master.m3u8');
+    startStream(sm, 'https://x/master.m3u8');
     expect(tracker.getAdCuePoints()).toHaveLength(1);
     expect(tracker.isAdPlaying()).toBe(true);
   });
 
-  it('forgets the previous stream\'s cue points when a different stream loads', () => {
+  it('keeps the second stream\'s cue points too, not just the first\'s', () => {
     const sm = createMockStreamManager();
     sm.getStreamTime = () => 5;
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
-    sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
-      getStreamData: () => ({ cuepoints: [{ start: 0, end: 10.01, played: false }] }),
-    });
-    loadStream(sm, 'https://x/master.m3u8');
+    startStream(sm, 'https://x/master.m3u8');
+    startStream(sm, 'https://y/master.m3u8');
+    expect(tracker.getAdCuePoints()).toHaveLength(1);
+    expect(tracker.isAdPlaying()).toBe(true);
+  });
+
+  it('forgets the previous stream\'s cue points when an ad-free stream follows', () => {
+    const sm = createMockStreamManager();
+    sm.getStreamTime = () => 5;
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    startStream(sm, 'https://x/master.m3u8');
     expect(tracker.isAdPlaying()).toBe(true);
 
-    // A second, ad-free stream: CUEPOINTS_CHANGED never fires for it.
-    loadStream(sm, 'https://y/master.m3u8');
+    // CUEPOINTS_CHANGED never fires for a stream with no ads.
+    startStream(sm, 'https://y/master.m3u8', { withCuePoints: false });
     expect(tracker.getAdCuePoints()).toEqual([]);
     expect(tracker.isAdPlaying()).toBe(false);
   });
 
-  it('forgets ad and break state when a different stream loads', () => {
+  it('is not confused by the mid-stream CUEPOINTS_CHANGED the SDK also fires', () => {
+    const sm = createMockStreamManager();
+    sm.getStreamTime = () => 5;
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    startStream(sm, 'https://x/master.m3u8');
+    // Fires again at break start to update played flags.
+    sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
+      getStreamData: () => ({ cuepoints: [{ start: 0, end: 10.01, played: true }] }),
+    });
+    // Now an ad-free stream: its cue points must still be dropped.
+    startStream(sm, 'https://y/master.m3u8', { withCuePoints: false });
+    expect(tracker.getAdCuePoints()).toEqual([]);
+    expect(tracker.isAdPlaying()).toBe(false);
+  });
+
+  it('forgets ad and break state when a new stream initializes', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
-    loadStream(sm, 'https://x/master.m3u8');
+    startStream(sm, 'https://x/master.m3u8');
     sm._emit(StreamEventType.AD_BREAK_STARTED, {});
     sm._emit(StreamEventType.STARTED, { getAd: () => makeAd() });
-    loadStream(sm, 'https://y/master.m3u8');
+    startStream(sm, 'https://y/master.m3u8', { withCuePoints: false });
     expect(tracker.getCurrentAd()).toBeNull();
     expect(tracker.getCurrentAdBreak()).toBeNull();
     expect(tracker.getVideoId()).toBeNull();
@@ -575,15 +627,19 @@ describe('DaiTracker — ad playback events', () => {
 
   // The DAI Ad object exposes no clickthrough URL, so AD_CLICK still reports
   // that a click happened but carries a null url rather than inventing one.
+  // The DAI Ad object has no clickthrough accessor, so passing url: null would
+  // trip video-core's "Called sendAdClick without { url: xxxxx }" warning on
+  // every single click. Omit the key instead of asserting a value we know we
+  // do not have.
   it.each([StreamEventType.CLICK, StreamEventType.VIDEO_CLICKED])(
-    '%s reports an ad click with a null url (none available from the SDK)',
+    '%s reports an ad click without a url key when the SDK provides none',
     (type) => {
       const sm = createMockStreamManager();
       const tracker = new DaiTracker(sm, { tag: createMockTag() });
       jest.spyOn(tracker, 'sendAdClick');
       startAd(tracker, sm);
       sm._emit(type, {});
-      expect(tracker.sendAdClick).toHaveBeenCalledWith({ url: null });
+      expect(tracker.sendAdClick).toHaveBeenCalledWith({});
     }
   );
 

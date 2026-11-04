@@ -80,24 +80,27 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     // Capture the stitched stream only. This is not an ad request: emitting one
     // here would also consume video-core's isRequested flag, which AD_START
     // depends on, and the flag is per-ad (see onAdStarted).
-    const previousUrl = this.streamData?.url;
     this.streamData = this.extractStreamData(event);
-
-    // Per-stream state has to be dropped when the stream actually changes, or
-    // a stale cue point list keeps gating content events on the next stream.
-    // Only on a *change*, though: the SDK fires CUEPOINTS_CHANGED before
-    // LOADED, so clearing unconditionally would discard the cue points
-    // belonging to the stream being loaded right now.
-    const changed = previousUrl != null && previousUrl !== this.streamData?.url;
-    if (changed) {
-      this.currentAdData = null;
-      this.adBreakData = null;
-      this.adBreakFromPeriod = false;
-      this.cuePoints = [];
-    }
   }
 
+  /**
+   * The only safe place to drop per-stream state. Verified live event order,
+   * per stream request:
+   *
+   *   STREAM_INITIALIZED -> CUEPOINTS_CHANGED -> LOADED -> ... -> CUEPOINTS_CHANGED
+   *
+   * Cue points arrive before their own LOADED, so resetting at LOADED discards
+   * the list for the stream being loaded; and they arrive again mid-stream, so
+   * a "did any arrive" flag cannot tell a fresh list from a stale one either.
+   * This event precedes a stream's cue points and nothing else does.
+   */
   onStreamInitialized() {
+    this.currentAdData = null;
+    this.adBreakData = null;
+    this.adBreakFromPeriod = false;
+    this.cuePoints = [];
+    this.streamData = null;
+
     this.sendDownload({ state: 'stream-initialized' });
   }
 
@@ -126,10 +129,20 @@ export default class DaiTracker extends nrvideo.VideoTracker {
 
   onAdBreakStarted(event) {
     this.adBreakData = this.extractAdBreakData(event);
-    // Copy, never the live object: video-core's getAttributes() fills and
-    // returns the very object it is handed, which would turn adBreakData — and
-    // so getCurrentAdBreak() — into the whole telemetry payload.
-    this.sendAdBreakStart({ ...this.adBreakData });
+    this.sendAdBreakStart(this.adBreakAttributes());
+  }
+
+  /**
+   * The break's reportable attributes, built fresh each time. Never the live
+   * adBreakData: video-core's getAttributes() fills and returns the very object
+   * it is handed, which would turn adBreakData — and so the public
+   * getCurrentAdBreak() — into the whole telemetry payload. `position` is
+   * deliberately excluded; it is already published as adPosition via
+   * getAdPosition().
+   */
+  adBreakAttributes() {
+    const { adCount } = this.adBreakData ?? {};
+    return adCount === undefined ? {} : { adCount };
   }
 
   onAdBreakEnded() {
@@ -145,7 +158,7 @@ export default class DaiTracker extends nrvideo.VideoTracker {
 
     // Attributes go out here rather than at AD_BREAK_STARTED: the break's
     // details are only known once its first ad has been seen (see onAdStarted).
-    this.sendAdBreakEnd(this.adBreakData ? { ...this.adBreakData } : undefined);
+    this.sendAdBreakEnd(this.adBreakAttributes());
     this.adBreakData = null;
     this.adBreakFromPeriod = false;
   }
@@ -222,7 +235,11 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   onAdClicked() {
-    this.sendAdClick({ url: this.getClickThroughUrl() });
+    // Omit url rather than send a known null: video-core warns when the key is
+    // absent-or-falsy, and the DAI Ad object exposes no clickthrough accessor,
+    // so a null would log that warning on every click.
+    const url = this.getClickThroughUrl();
+    this.sendAdClick(url ? { url } : {});
   }
 
   onCuePointsChanged(event) {
