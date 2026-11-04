@@ -91,24 +91,46 @@ describe('DaiTracker — construction & lifecycle', () => {
     expect(tracker.sendDownload).toHaveBeenCalledWith({ state: 'stream-initialized' });
   });
 
-  it('AD_BREAK_STARTED extracts break data and calls sendAdBreakStart()', () => {
+  // The live DAI StreamEvent has no getAdBreak() — only getAd, getAdUi,
+  // getCustomAdUi, getStreamData, preventDefault — so a break opens with no
+  // detail of its own and is backfilled from its first ad's pod info.
+  it('AD_BREAK_STARTED opens a break and calls sendAdBreakStart()', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
     jest.spyOn(tracker, 'sendAdBreakStart');
-    const event = { getAdBreak: () => ({ id: 'b1', title: 'Break 1', ads: [{}, {}] }) };
-    sm._emit(StreamEventType.AD_BREAK_STARTED, event);
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
     expect(tracker.sendAdBreakStart).toHaveBeenCalled();
-    expect(tracker.getCurrentAdBreak()).toEqual(expect.objectContaining({ adBreakId: 'b1' }));
+    // Non-null is the contract HLSTracker's content guard relies on.
+    expect(tracker.getCurrentAdBreak()).not.toBeNull();
   });
 
   it('AD_BREAK_ENDED calls sendAdBreakEnd() and clears the current break', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
-    sm._emit(StreamEventType.AD_BREAK_STARTED, { getAdBreak: () => ({ id: 'b1', ads: [] }) });
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
     jest.spyOn(tracker, 'sendAdBreakEnd');
     sm._emit(StreamEventType.AD_BREAK_ENDED, {});
     expect(tracker.sendAdBreakEnd).toHaveBeenCalled();
     expect(tracker.getCurrentAdBreak()).toBeNull();
+  });
+
+  // The break's details are only known once its first ad has been seen, so the
+  // end event is the one that can actually carry them to the backend.
+  it('AD_BREAK_ENDED reports the backfilled break details', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    sm._emit(StreamEventType.STARTED, {
+      getAd: () => ({
+        getAdId: () => 'ad1',
+        getAdPodInfo: () => ({ getPodIndex: () => 0, getTotalAds: () => 2 }),
+      }),
+    });
+    jest.spyOn(tracker, 'sendAdBreakEnd');
+    sm._emit(StreamEventType.AD_BREAK_ENDED, {});
+    expect(tracker.sendAdBreakEnd).toHaveBeenCalledWith(
+      expect.objectContaining({ adCount: 2, position: 'pre' })
+    );
   });
 
   it('AD_PERIOD_STARTED with no current break falls back to starting a break', () => {
@@ -149,19 +171,90 @@ describe('DaiTracker — construction & lifecycle', () => {
 });
 
 describe('DaiTracker — ad playback events', () => {
+  // Mirrors the real IMA DAI Ad object: note there is deliberately NO
+  // getClickThroughUrl — the live SDK does not define one, and calling it
+  // unguarded used to throw and wipe every ad attribute.
+  function makeAd(overrides = {}) {
+    return {
+      getAdId: () => 'ad1',
+      getCreativeId: () => 'c1',
+      getDuration: () => 15,
+      getTitle: () => 'My Ad',
+      getAdPodInfo: () => ({ getPodIndex: () => 0 }),
+      ...overrides,
+    };
+  }
+
   function startAd(tracker, sm, adOverrides = {}) {
     sm._emit(StreamEventType.AD_BREAK_STARTED, { getAdBreak: () => ({ id: 'b1', ads: [{}] }) });
-    sm._emit(StreamEventType.STARTED, {
-      getAd: () => ({
-        getAdId: () => 'ad1',
-        getCreativeId: () => 'c1',
-        getDuration: () => 15,
-        getTitle: () => 'My Ad',
-        getClickThroughUrl: () => 'https://x',
-        ...adOverrides,
-      }),
-    });
+    sm._emit(StreamEventType.STARTED, { getAd: () => makeAd(adOverrides) });
   }
+
+  it('extracts ad identity even though the SDK has no getClickThroughUrl', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    startAd(tracker, sm);
+    expect(tracker.getVideoId()).toBe('ad1');
+    expect(tracker.getAdCreativeId()).toBe('c1');
+    expect(tracker.getTitle()).toBe('My Ad');
+    expect(tracker.getDuration()).toBe(15000);
+  });
+
+  it('survives an Ad object whose optional accessors all throw', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    const hostile = {
+      getAdId: () => 'ad9',
+      getCreativeId: () => { throw new Error('nope'); },
+      getDuration: () => { throw new Error('nope'); },
+      getTitle: () => { throw new Error('nope'); },
+      getAdPodInfo: () => { throw new Error('nope'); },
+    };
+    sm._emit(StreamEventType.AD_BREAK_STARTED, { getAdBreak: () => ({ id: 'b1', ads: [] }) });
+    expect(() => sm._emit(StreamEventType.STARTED, { getAd: () => hostile })).not.toThrow();
+    // The one accessor that works must still come through.
+    expect(tracker.getVideoId()).toBe('ad9');
+  });
+
+  it.each([
+    [0, 'pre'],
+    [2, 'mid'],
+    [-1, 'post'],
+  ])('derives adPosition from IMA pod index %i -> "%s"', (podIndex, expected) => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    startAd(tracker, sm, { getAdPodInfo: () => ({ getPodIndex: () => podIndex }) });
+    expect(tracker.getAdPosition()).toBe(expected);
+  });
+
+  it('reports the real ad count from the IMA ad pod, not 0', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    startAd(tracker, sm, {
+      getAdPodInfo: () => ({ getPodIndex: () => 0, getTotalAds: () => 3 }),
+    });
+    expect(tracker.getCurrentAdBreak().adCount).toBe(3);
+  });
+
+  it('leaves adCount unset rather than reporting 0 when the pod is unavailable', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    expect(tracker.getCurrentAdBreak()).not.toBeNull(); // the content guard depends on this
+    expect(tracker.getCurrentAdBreak().adCount).toBeUndefined();
+  });
+
+  it('keeps adPosition stable for the whole ad as the stream time advances', () => {
+    const sm = createMockStreamManager();
+    const tag = createMockTag();
+    const tracker = new DaiTracker(sm, { tag });
+    startAd(tracker, sm, { getAdPodInfo: () => ({ getPodIndex: () => 0 }) });
+    expect(tracker.getAdPosition()).toBe('pre');
+    // A DAI pre-roll advances the stitched stream's currentTime past any
+    // time-based 'pre' threshold; position must not drift to 'mid'.
+    tag.currentTime = 9.5;
+    expect(tracker.getAdPosition()).toBe('pre');
+  });
 
   it('STARTED extracts ad data and calls sendStart()', () => {
     const sm = createMockStreamManager();
@@ -218,27 +311,27 @@ describe('DaiTracker — ad playback events', () => {
     expect(tracker.sendResume).toHaveBeenCalled();
   });
 
+  // The DAI Ad object exposes no clickthrough URL, so AD_CLICK still reports
+  // that a click happened but carries a null url rather than inventing one.
   it.each([StreamEventType.CLICK, StreamEventType.VIDEO_CLICKED])(
-    '%s calls sendAdClick with the click-through url',
+    '%s reports an ad click with a null url (none available from the SDK)',
     (type) => {
       const sm = createMockStreamManager();
       const tracker = new DaiTracker(sm, { tag: createMockTag() });
       jest.spyOn(tracker, 'sendAdClick');
       startAd(tracker, sm);
       sm._emit(type, {});
-      expect(tracker.sendAdClick).toHaveBeenCalledWith({ url: 'https://x' });
+      expect(tracker.sendAdClick).toHaveBeenCalledWith({ url: null });
     }
   );
 
-  it.each([
-    [2, 'pre'],
-    [60, 'mid'],
-    [117, 'post'], // duration (120) - 10 < currentTime
-  ])('classifies ad position at currentTime %i as "%s"', (currentTime, expected) => {
+  it('picks up a clickthrough url if a future SDK version provides one', () => {
     const sm = createMockStreamManager();
-    const tracker = new DaiTracker(sm, { tag: { ...createMockTag(), currentTime, duration: 120 } });
-    startAd(tracker, sm);
-    expect(tracker.getCurrentAd().position).toBe(expected);
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    jest.spyOn(tracker, 'sendAdClick');
+    startAd(tracker, sm, { getClickThroughUrl: () => 'https://advertiser.example' });
+    sm._emit(StreamEventType.CLICK, {});
+    expect(tracker.sendAdClick).toHaveBeenCalledWith({ url: 'https://advertiser.example' });
   });
 
   it('a second ad break does not see stale data from the first', () => {

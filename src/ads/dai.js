@@ -89,7 +89,9 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   onAdBreakEnded() {
-    this.sendAdBreakEnd();
+    // Pass the break data here, not at AD_BREAK_STARTED: it is only populated
+    // once the break's first ad has been seen (see onAdStarted).
+    this.sendAdBreakEnd(this.adBreakData ?? undefined);
     this.adBreakData = null;
   }
 
@@ -107,6 +109,17 @@ export default class DaiTracker extends nrvideo.VideoTracker {
 
   onAdStarted(event) {
     this.currentAdData = this.extractAdData(event);
+    // AD_BREAK_STARTED carries no break information at all, so backfill it from
+    // the first ad's pod info now that one exists.
+    if (this.adBreakData) {
+      if (this.adBreakData.position == null) {
+        this.adBreakData.position = this.currentAdData.position;
+      }
+      if (this.adBreakData.adCount === undefined &&
+          this.currentAdData.adCount !== undefined) {
+        this.adBreakData.adCount = this.currentAdData.adCount;
+      }
+    }
     this.sendStart();
   }
 
@@ -167,40 +180,80 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     }
   }
 
-  extractAdBreakData(event) {
-    try {
-      const adBreak = event.getAdBreak();
-      return {
-        adBreakId: adBreak?.id,
-        adBreakTitle: adBreak?.title,
-        adCount: adBreak?.ads?.length || 0,
-        position: this.getAdPosition(),
-      };
-    } catch (error) {
-      nrvideo.Log.warn('DaiTracker: Failed to extract ad break data', error);
-      return {};
-    }
+  /**
+   * The DAI StreamEvent exposes no ad-break accessor (verified against the live
+   * SDK: only getAd / getAdUi / getCustomAdUi / getStreamData / preventDefault),
+   * so nothing about the break is knowable at AD_BREAK_STARTED. Both fields are
+   * filled from the first ad's pod info in onAdStarted. Must stay non-null —
+   * HLSTracker's content guard treats this object as "a break is in progress".
+   */
+  extractAdBreakData() {
+    return { adCount: undefined, position: null };
   }
 
   extractAdData(event) {
+    let ad;
     try {
-      const ad = event.getAd();
-      return {
-        adId: ad?.getAdId(),
-        creativeId: ad?.getCreativeId(),
-        duration: ad?.getDuration(),
-        title: ad?.getTitle(),
-        description: ad?.getDescription?.(),
-        advertiserName: ad?.getAdvertiserName?.(),
-        clickThroughUrl: ad?.getClickThroughUrl(),
-        dealId: ad?.getDealId?.(),
-        wrapperAdIds: ad?.getWrapperAdIds?.(),
-        position: this.getAdPosition(),
-      };
+      ad = event.getAd();
     } catch (error) {
       nrvideo.Log.warn('DaiTracker: Failed to extract ad data', error);
       return {};
     }
+
+    // Read each accessor independently. The IMA Ad surface varies by creative
+    // and SDK version — notably it defines no getClickThroughUrl at all — and
+    // one missing method must not discard the attributes that did resolve.
+    const read = (name) => {
+      try {
+        return typeof ad?.[name] === 'function' ? ad[name]() : undefined;
+      } catch (error) {
+        nrvideo.Log.warn(`DaiTracker: ad.${name}() failed`, error);
+        return undefined;
+      }
+    };
+
+    return {
+      adId: read('getAdId'),
+      creativeId: read('getCreativeId'),
+      duration: read('getDuration'),
+      title: read('getTitle'),
+      description: read('getDescription'),
+      advertiserName: read('getAdvertiserName'),
+      dealId: read('getDealId'),
+      wrapperAdIds: read('getWrapperAdIds'),
+      // Absent from today's DAI Ad object; read defensively so a future SDK
+      // that adds it is picked up without another change here.
+      clickThroughUrl: read('getClickThroughUrl'),
+      position: this.extractAdPosition(ad),
+      adCount: this.extractPodTotalAds(ad),
+    };
+  }
+
+  extractPodTotalAds(ad) {
+    try {
+      const total = ad?.getAdPodInfo?.()?.getTotalAds?.();
+      return typeof total === 'number' ? total : undefined;
+    } catch (error) {
+      return undefined;
+    }
+  }
+
+  /**
+   * Ad position from IMA's pod index, which is authoritative: podIndex 0 is a
+   * pre-roll, -1 a post-roll, anything else a mid-roll. Playback time cannot be
+   * used — under SSAI the ad itself advances the stitched stream's clock, so a
+   * time-based guess reclassifies a long pre-roll as a mid-roll partway in.
+   */
+  extractAdPosition(ad) {
+    try {
+      const podIndex = ad?.getAdPodInfo?.()?.getPodIndex?.();
+      if (podIndex === 0) return 'pre';
+      if (podIndex === -1) return 'post';
+      if (typeof podIndex === 'number') return 'mid';
+    } catch (error) {
+      nrvideo.Log.warn('DaiTracker: Failed to read ad pod info', error);
+    }
+    return null;
   }
 
   extractErrorData(event) {
@@ -288,15 +341,10 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     return this.tag?.duration === Infinity ? 'live' : 'vod';
   }
 
+  // Returns the position captured when the ad started, so it stays constant
+  // across every event of that ad instead of drifting as playback advances.
   getAdPosition() {
-    if (!this.currentAdData && !this.adBreakData) return null;
-
-    const currentTime = this.tag?.currentTime;
-    const duration = this.tag?.duration;
-
-    if (currentTime < 5) return 'pre';
-    if (duration && currentTime > duration - 10) return 'post';
-    return 'mid';
+    return this.currentAdData?.position ?? this.adBreakData?.position ?? null;
   }
 
   getCurrentAdBreak() {
