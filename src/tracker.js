@@ -370,10 +370,12 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   onBufferAppended(event, data) {
+    if (this.isAdsTrackerActive()) return;
     this.sendBufferEnd();
   }
 
   onCanPlayThrough() {
+    if (this.isAdsTrackerActive()) return;
     this.sendBufferEnd();
   }
 }

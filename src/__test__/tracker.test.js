@@ -586,6 +586,29 @@ describe('HLSTracker', () => {
       expect(tracker.sendBufferStart).not.toHaveBeenCalled();
     });
 
+    it('onCanPlayThrough() does not report a content buffer end during an ad break', () => {
+      jest.spyOn(tracker, 'sendBufferEnd');
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onCanPlayThrough();
+      expect(tracker.sendBufferEnd).not.toHaveBeenCalled();
+    });
+
+    it('onBufferAppended() does not report a content buffer end during an ad break', () => {
+      jest.spyOn(tracker, 'sendBufferEnd');
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onBufferAppended('hlsBufferAppended', {});
+      expect(tracker.sendBufferEnd).not.toHaveBeenCalled();
+    });
+
+    it('onCanPlayThrough()/onBufferAppended() report normally once the break ends', () => {
+      jest.spyOn(tracker, 'sendBufferEnd');
+      const fakeDai = makeFakeDaiTracker(null);
+      tracker.adsTracker = fakeDai;
+      tracker.onCanPlayThrough();
+      tracker.onBufferAppended('hlsBufferAppended', {});
+      expect(tracker.sendBufferEnd).toHaveBeenCalledTimes(2);
+    });
+
     it('onPlaying() is suppressed during an ad break', () => {
       jest.spyOn(tracker, 'sendResume');
       jest.spyOn(tracker, 'sendBufferEnd');
