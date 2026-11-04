@@ -138,6 +138,11 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     if (!this.adsTracker || !this.adsTracker.isAd || !this.adsTracker.isAd()) {
       return false;
     }
+    // Preferred: covers the start of a pre-roll, before the ad SDK has
+    // announced the break.
+    if (typeof this.adsTracker.isAdPlaying === 'function') {
+      return this.adsTracker.isAdPlaying();
+    }
     if (typeof this.adsTracker.getCurrentAdBreak === 'function') {
       return this.adsTracker.getCurrentAdBreak() != null;
     }
@@ -339,6 +344,10 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   onTimeupdate() {
+    // Under SSAI the stitched stream's clock advances through the ad, so
+    // timeupdate fires during a break. Starting content here would mark it
+    // started before any content was shown.
+    if (this.isAdsTrackerActive()) return;
     if (this.getPlayhead() > 0.1) {
       this.sendStart();
     }

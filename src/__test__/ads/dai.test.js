@@ -163,13 +163,99 @@ describe('DaiTracker — construction & lifecycle', () => {
     expect(tracker.getCurrentAdBreak()).not.toBeNull();
   });
 
+  // The live StreamEvent has no getError(); the diagnostic lives on StreamData.
+  it('ERROR reports the SDK error message from StreamData', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    jest.spyOn(tracker, 'sendError');
+    sm._emit(StreamEventType.ERROR, {
+      getStreamData: () => ({
+        errorMessage: 'Stream initialization failed. HTTP status code: 404',
+      }),
+    });
+    expect(tracker.sendError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorMessage: 'Stream initialization failed. HTTP status code: 404',
+      })
+    );
+  });
+
   it('ERROR with a throwing event object falls back to a generic message, not a crash', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
     jest.spyOn(tracker, 'sendError');
-    const throwingEvent = { getError: () => { throw new Error('boom'); } };
+    const throwingEvent = { getStreamData: () => { throw new Error('boom'); } };
     expect(() => sm._emit(StreamEventType.ERROR, throwingEvent)).not.toThrow();
-    expect(tracker.sendError).toHaveBeenCalledWith(expect.objectContaining({ errorMessage: 'Unknown DAI error' }));
+    expect(tracker.sendError).toHaveBeenCalledWith(
+      expect.objectContaining({ errorMessage: 'Unknown DAI error' })
+    );
+  });
+
+  it('CUEPOINTS_CHANGED reads cue points from StreamData', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    const cuepoints = [
+      { start: 0, end: 10.01, played: false },
+      { start: 79.927, end: 89.937, played: false },
+    ];
+    sm._emit(StreamEventType.CUEPOINTS_CHANGED, { getStreamData: () => ({ cuepoints }) });
+    expect(tracker.getAdCuePoints()).toEqual(cuepoints);
+  });
+
+  it('does not clobber known cue points when a later event carries none', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    const cuepoints = [{ start: 0, end: 10.01, played: false }];
+    sm._emit(StreamEventType.CUEPOINTS_CHANGED, { getStreamData: () => ({ cuepoints }) });
+    // LOADED carries cuepoints: null on the live SDK.
+    sm._emit(StreamEventType.CUEPOINTS_CHANGED, { getStreamData: () => ({ cuepoints: null }) });
+    expect(tracker.getAdCuePoints()).toEqual(cuepoints);
+  });
+
+  // AD_BREAK_STARTED arrives after playback has already entered the ad, so the
+  // break object alone cannot tell us an ad is on screen at the first
+  // timeupdate. The cue points, known from CUEPOINTS_CHANGED, can.
+  it('knows an ad is playing inside a cue point window before the break is announced', () => {
+    const sm = createMockStreamManager();
+    sm.getStreamTime = () => 0.2;
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
+      getStreamData: () => ({ cuepoints: [{ start: 0, end: 10.01, played: false }] }),
+    });
+    expect(tracker.getCurrentAdBreak()).toBeNull();
+    expect(tracker.isAdPlaying()).toBe(true);
+  });
+
+  it('knows content is playing once the stream time leaves every cue point window', () => {
+    const sm = createMockStreamManager();
+    sm.getStreamTime = () => 42;
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
+      getStreamData: () => ({ cuepoints: [{ start: 0, end: 10.01, played: true }] }),
+    });
+    expect(tracker.isAdPlaying()).toBe(false);
+  });
+
+  it('reports an ad is playing whenever a break is open, cue points or not', () => {
+    const sm = createMockStreamManager();
+    sm.getStreamTime = () => 500;
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    expect(tracker.isAdPlaying()).toBe(true);
+  });
+
+  it('does not hand its internal break state to the telemetry layer', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    // video-core's getAttributes() fills and returns the very object it is
+    // given, so passing internal state by reference lets it be overwritten.
+    jest.spyOn(tracker, 'sendAdBreakStart').mockImplementation((att) => {
+      att.trackerName = 'injected';
+      att.viewId = 'injected';
+    });
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    expect(tracker.getCurrentAdBreak()).not.toHaveProperty('trackerName');
+    expect(tracker.getCurrentAdBreak()).not.toHaveProperty('viewId');
   });
 });
 
@@ -382,8 +468,15 @@ describe('DaiTracker — cue points, metadata, getters', () => {
   it('CUEPOINTS_CHANGED updates getAdCuePoints() without sending anything', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
-    sm._emit(StreamEventType.CUEPOINTS_CHANGED, { getCuepoints: () => [10, 30, -1] });
-    expect(tracker.getAdCuePoints()).toEqual([10, 30, -1]);
+    const sends = [
+      'sendRequest', 'sendStart', 'sendEnd', 'sendAdBreakStart', 'sendAdBreakEnd',
+      'sendAdQuartile', 'sendAdClick', 'sendError', 'sendDownload',
+    ];
+    sends.forEach((m) => jest.spyOn(tracker, m));
+    const cuepoints = [{ start: 0, end: 10.01, played: false }];
+    sm._emit(StreamEventType.CUEPOINTS_CHANGED, { getStreamData: () => ({ cuepoints }) });
+    expect(tracker.getAdCuePoints()).toEqual(cuepoints);
+    sends.forEach((m) => expect(tracker[m]).not.toHaveBeenCalled());
   });
 
   it('TIMED_METADATA extracts type/data without sending anything', () => {

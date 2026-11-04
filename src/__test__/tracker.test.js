@@ -555,6 +555,26 @@ describe('HLSTracker', () => {
       expect(tracker.isAdsTrackerActive()).toBe(true);
     });
 
+    // isAdPlaying() also covers the start of a pre-roll, before the SDK has
+    // announced the break — getCurrentAdBreak() is still null there.
+    it('isAdsTrackerActive() prefers isAdPlaying() over getCurrentAdBreak()', () => {
+      tracker.adsTracker = {
+        isAd: () => true,
+        getCurrentAdBreak: () => null,
+        isAdPlaying: () => true,
+      };
+      expect(tracker.isAdsTrackerActive()).toBe(true);
+    });
+
+    it('isAdsTrackerActive() is false when isAdPlaying() says no ad is on screen', () => {
+      tracker.adsTracker = {
+        isAd: () => true,
+        getCurrentAdBreak: () => null,
+        isAdPlaying: () => false,
+      };
+      expect(tracker.isAdsTrackerActive()).toBe(false);
+    });
+
     it('onPause() is suppressed during an ad break and resumes firing once it ends', () => {
       jest.spyOn(tracker, 'sendPause');
       const fakeDai = makeFakeDaiTracker({ adBreakId: 'b1' });
@@ -584,6 +604,27 @@ describe('HLSTracker', () => {
       tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
       tracker.onWaiting();
       expect(tracker.sendBufferStart).not.toHaveBeenCalled();
+    });
+
+    // Under SSAI the stitched stream's currentTime advances through the ad, so
+    // timeupdate fires during a pre-roll. Reporting CONTENT_START there marks
+    // content as started before any content has been shown, and (because the
+    // ad has not ended yet) excludes the pre-roll from content startup time.
+    it('onTimeupdate() does not report a content start during an ad break', () => {
+      jest.spyOn(tracker, 'sendStart');
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onTimeupdate();
+      expect(tracker.sendStart).not.toHaveBeenCalled();
+    });
+
+    it('onTimeupdate() reports a content start once the break has ended', () => {
+      jest.spyOn(tracker, 'sendStart');
+      const fakeDai = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.adsTracker = fakeDai;
+      tracker.onTimeupdate();
+      fakeDai.getCurrentAdBreak = () => null;
+      tracker.onTimeupdate();
+      expect(tracker.sendStart).toHaveBeenCalledTimes(1);
     });
 
     it('onCanPlayThrough() does not report a content buffer end during an ad break', () => {

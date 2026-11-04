@@ -87,13 +87,16 @@ export default class DaiTracker extends nrvideo.VideoTracker {
 
   onAdBreakStarted(event) {
     this.adBreakData = this.extractAdBreakData(event);
-    this.sendAdBreakStart(this.adBreakData);
+    // Copy, never the live object: video-core's getAttributes() fills and
+    // returns the very object it is handed, which would turn adBreakData — and
+    // so getCurrentAdBreak() — into the whole telemetry payload.
+    this.sendAdBreakStart({ ...this.adBreakData });
   }
 
   onAdBreakEnded() {
-    // Pass the break data here, not at AD_BREAK_STARTED: it is only populated
-    // once the break's first ad has been seen (see onAdStarted).
-    this.sendAdBreakEnd(this.adBreakData ?? undefined);
+    // Attributes go out here rather than at AD_BREAK_STARTED: the break's
+    // details are only known once its first ad has been seen (see onAdStarted).
+    this.sendAdBreakEnd(this.adBreakData ? { ...this.adBreakData } : undefined);
     this.adBreakData = null;
   }
 
@@ -164,7 +167,8 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   onCuePointsChanged(event) {
-    this.cuePoints = this.extractCuePoints(event);
+    const cuePoints = this.extractCuePoints(event);
+    if (cuePoints) this.cuePoints = cuePoints;
   }
 
   onTimedMetadata(event) {
@@ -262,27 +266,35 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     return null;
   }
 
+  /**
+   * The DAI StreamEvent has no getError(); the only diagnostic the SDK provides
+   * is StreamData.errorMessage, which carries the cause and HTTP status (e.g.
+   * "Stream initialization failed... HTTP status code: 404"). There is no
+   * numeric code field, so none is reported rather than inventing one.
+   */
   extractErrorData(event) {
     try {
-      const error = event.getError();
-      return {
-        errorCode: error?.getErrorCode(),
-        errorMessage: error?.getMessage(),
-        innerError: error?.getInnerError(),
-      };
+      const message = event.getStreamData?.()?.errorMessage;
+      if (message) return { errorMessage: String(message) };
     } catch (error) {
       nrvideo.Log.warn('DaiTracker: Failed to extract error data', error);
-      return { errorMessage: 'Unknown DAI error' };
     }
+    return { errorMessage: 'Unknown DAI error' };
   }
 
+  /**
+   * Cue points live on StreamData — the StreamEvent has no getCuepoints(). Only
+   * CUEPOINTS_CHANGED actually carries them; other events report null, so a
+   * missing list leaves the known one untouched rather than clearing it.
+   */
   extractCuePoints(event) {
     try {
-      return event.getCuepoints() || [];
+      const cuepoints = event.getStreamData?.()?.cuepoints;
+      if (Array.isArray(cuepoints)) return cuepoints;
     } catch (error) {
       nrvideo.Log.warn('DaiTracker: Failed to extract cue points', error);
-      return [];
     }
+    return null;
   }
 
   extractTimedMetadata(event) {
@@ -351,6 +363,29 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   // across every event of that ad instead of drifting as playback advances.
   getAdPosition() {
     return this.currentAdData?.position ?? this.adBreakData?.position ?? null;
+  }
+
+  /**
+   * True while an ad is on screen. Checked by HLSTracker so content QoE stands
+   * down during breaks.
+   *
+   * AD_BREAK_STARTED arrives only after playback has already entered the ad, so
+   * the break object alone misses the first moments of a pre-roll — long enough
+   * for a timeupdate to report CONTENT_START before any content has been shown.
+   * The cue points, known ahead of playback, cover that window.
+   */
+  isAdPlaying() {
+    if (this.adBreakData) return true;
+
+    const cuePoints = this.cuePoints;
+    if (!cuePoints?.length) return false;
+
+    const streamTime = this.getPlayhead() / 1000;
+    if (!Number.isFinite(streamTime)) return false;
+
+    return cuePoints.some(
+      (cue) => streamTime >= cue.start && streamTime < cue.end
+    );
   }
 
   getCurrentAdBreak() {
