@@ -13,7 +13,8 @@ The New Relic HLS.js Tracker provides comprehensive video analytics for applicat
 - 📊 **Comprehensive Bitrate Tracking** - Four distinct bitrate metrics for complete quality analysis
 - 🔄 **Adaptive Bitrate Monitoring** - Tracks rendition changes with old and new bitrate values
 - 📈 **QoE Metrics** - Quality of Experience tracking for startup time, buffering, and playback quality
-- 🎨 **Event Segregation** - Organized event types: `VideoAction`, `VideoErrorAction`, `VideoCustomAction`
+- 🎨 **Event Segregation** - Organized event types: `VideoAction`, `VideoAdAction`, `VideoErrorAction`, `VideoCustomAction`
+- 📺 **Google DAI Ads** - Server-side ad insertion tracking: ad breaks, quartiles, clicks and ad errors
 - 🚀 **Easy Integration** - NPM package or direct script include
 - ⚡ **Real-Time Performance** - Network throughput and per-segment download bitrate monitoring
 - 🎬 **HLS Specific** - Optimized for adaptive streaming using Media Source Extensions (MSE)
@@ -25,6 +26,7 @@ The New Relic HLS.js Tracker provides comprehensive video analytics for applicat
   - [Option 2: Direct Script Include](#option-2-direct-script-include-without-npm)
 - [Prerequisites](#prerequisites)
 - [Usage](#usage)
+  - [Google DAI Ad Tracking](#google-dai-ad-tracking)
 - [Best Practices](#best-practices)
 - [Configuration Options](#configuration-options)
 - [API Reference](#api-reference)
@@ -235,6 +237,71 @@ All sub-fields optional — missing values fall back to the defaults baked into 
 | `osBuild` | `getBuildIdSync()` — OS image build | `"1"` |
 | `appBuild` | `getBuildNumber()` — app build number | `"1"` |
 | `architecture` | `'aarch64'` | `"aarch64"` |
+
+### Google DAI Ad Tracking
+
+For streams with Google IMA DAI (Dynamic Ad Insertion) ads stitched in server-side, `DaiTracker` reports ad breaks, individual ads, quartiles, clicks and ad errors as `VideoAdAction` events on the same New Relic view as your content.
+
+**Prerequisite:** load the IMA DAI SDK before constructing the tracker — `DaiTracker` reads `google.ima.dai.api.*` off the global scope and is a no-op (with a warning) if the SDK is missing.
+
+```html
+<script src="https://imasdk.googleapis.com/js/sdkloader/ima3_dai.js"></script>
+```
+
+Because hls.js has no ads plugin layer, the wiring is explicit: your application creates the `StreamManager` (as it already must, to obtain the stitched manifest URL) and hands it to `DaiTracker`.
+
+```javascript
+import HLSTracker, { DaiTracker } from '@newrelic/video-hls';
+
+const video = document.getElementById('video');
+const hls = new Hls();
+
+// Attach the media element BEFORE constructing the tracker — the tracker
+// resolves its video tag from hls.media, which is null until attachMedia().
+hls.attachMedia(video);
+const tracker = new HLSTracker(hls, options);
+
+const streamManager = new google.ima.dai.api.StreamManager(video);
+
+const daiTracker = new DaiTracker(streamManager, {
+  tag: video,
+  contentTracker: tracker,
+});
+tracker.setAdsTracker(daiTracker);
+
+// DAI hands back the stitched manifest; hls.js plays it as one continuous stream.
+streamManager.addEventListener(
+  google.ima.dai.api.StreamEvent.Type.LOADED,
+  (e) => hls.loadSource(e.getStreamData().url)
+);
+
+const request = new google.ima.dai.api.VODStreamRequest();
+request.contentSourceId = 'YOUR_CMS_ID';
+request.videoId = 'YOUR_VIDEO_ID';
+streamManager.requestStream(request);
+```
+
+Live streams work identically — use a `LiveStreamRequest` with an `assetKey` instead.
+
+`setAdsTracker()` is what links the two: it marks `DaiTracker` as an ad tracker and funnels its events into the content tracker's session, so ads and content share one `viewId`. While an ad break is on screen, content pause/resume/seek/buffering events are suppressed so ad time is not counted as content time; they resume automatically when the break ends.
+
+**Constructor options**
+
+| Option | Required | Purpose |
+| --- | --- | --- |
+| `tag` | Yes | The `<video>` element. Used for playhead fallback, mute state and VOD/live detection. |
+| `contentTracker` | No | Your `HLSTracker` instance. Only affects bitrate attribution during ads — the stitched stream is decoded by the same hls.js instance, so quality data lives on the content tracker. Omit it and `getBitrate()` returns `null` during ads. |
+
+**Script-tag (UMD) consumers** reach the class as a static on the global, since the UMD bundle exposes only the default export:
+
+```javascript
+var daiTracker = new HLSTracker.DaiTracker(streamManager, {
+  tag: video,
+  contentTracker: tracker,
+});
+```
+
+A complete runnable example is in [`samples/dai/index.html`](samples/dai/index.html).
 
 ## Best Practices
 
