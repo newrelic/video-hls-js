@@ -25,12 +25,18 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   registerListeners() {
-    if (!this.player || !google?.ima?.dai?.api?.StreamEvent) {
+    // `typeof` first: optional chaining still throws a ReferenceError on an
+    // identifier that was never declared, which is exactly the case when the
+    // IMA DAI SDK script has not loaded.
+    const sdk =
+      typeof google === 'undefined' ? undefined : google?.ima?.dai?.api;
+
+    if (!this.player || !sdk?.StreamEvent) {
       nrvideo.Log.warn('DaiTracker: StreamManager or DAI API not available');
       return;
     }
 
-    const StreamEvent = google.ima.dai.api.StreamEvent.Type;
+    const StreamEvent = sdk.StreamEvent.Type;
 
     this.eventHandlers = {
       [StreamEvent.LOADED]: this.onStreamLoaded.bind(this),
@@ -54,7 +60,6 @@ export default class DaiTracker extends nrvideo.VideoTracker {
       [StreamEvent.VIDEO_CLICKED]: this.onAdClicked.bind(this),
 
       [StreamEvent.CUEPOINTS_CHANGED]: this.onCuePointsChanged.bind(this),
-      [StreamEvent.TIMED_METADATA]: this.onTimedMetadata.bind(this),
     };
 
     Object.entries(this.eventHandlers).forEach(([type, handler]) => {
@@ -72,28 +77,51 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   onStreamLoaded(event) {
-    // Every field below is per-stream. cuePoints especially: it gates content
-    // events via isAdPlaying(), and CUEPOINTS_CHANGED never fires for an
-    // ad-free stream, so a list left from a previous stream would make the new
-    // stream's opening content look like an ad.
-    this.currentAdData = null;
-    this.adBreakData = null;
-    this.adBreakFromPeriod = false;
-    this.cuePoints = [];
-    this.timedMetadata = null;
-
     // Capture the stitched stream only. This is not an ad request: emitting one
     // here would also consume video-core's isRequested flag, which AD_START
     // depends on, and the flag is per-ad (see onAdStarted).
+    const previousUrl = this.streamData?.url;
     this.streamData = this.extractStreamData(event);
+
+    // Per-stream state has to be dropped when the stream actually changes, or
+    // a stale cue point list keeps gating content events on the next stream.
+    // Only on a *change*, though: the SDK fires CUEPOINTS_CHANGED before
+    // LOADED, so clearing unconditionally would discard the cue points
+    // belonging to the stream being loaded right now.
+    const changed = previousUrl != null && previousUrl !== this.streamData?.url;
+    if (changed) {
+      this.currentAdData = null;
+      this.adBreakData = null;
+      this.adBreakFromPeriod = false;
+      this.cuePoints = [];
+    }
   }
 
   onStreamInitialized() {
     this.sendDownload({ state: 'stream-initialized' });
   }
 
+  /**
+   * StreamEvent.ERROR is predominantly stream-level — a failed stream request
+   * means nothing plays at all. Because isAd() is true here, reporting it only
+   * on this tracker routes it to AD_ERROR, and video-core sets
+   * hadStartupError/hadPlaybackError only for non-ad trackers, so the most
+   * severe failure the integration can see would never reach content error or
+   * startup-failure analysis. It therefore goes to the content tracker, and
+   * additionally to this one when a break is open, since the ad failed too.
+   */
   onStreamError(event) {
-    this.sendError(this.extractErrorData(event));
+    const errorData = this.extractErrorData(event);
+    const contentTracker = this.parentTracker ?? this.contentTracker;
+
+    if (this.adBreakData) this.sendError(errorData);
+
+    if (contentTracker?.sendError) {
+      contentTracker.sendError(errorData);
+    } else if (!this.adBreakData) {
+      // Nothing else to report on — better an ad error than a lost error.
+      this.sendError(errorData);
+    }
   }
 
   onAdBreakStarted(event) {
@@ -202,17 +230,12 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     if (cuePoints) this.cuePoints = cuePoints;
   }
 
-  onTimedMetadata(event) {
-    this.timedMetadata = this.extractTimedMetadata(event);
-  }
-
   extractStreamData(event) {
     try {
       const streamData = event.getStreamData();
       return {
         streamId: streamData?.streamId,
         url: streamData?.url,
-        adTagParameters: streamData?.adTagParameters,
         streamType: this.getStreamType(),
       };
     } catch (error) {
@@ -275,6 +298,7 @@ export default class DaiTracker extends nrvideo.VideoTracker {
       const total = ad?.getAdPodInfo?.()?.getTotalAds?.();
       return typeof total === 'number' ? total : undefined;
     } catch (error) {
+      nrvideo.Log.warn('DaiTracker: Failed to read ad pod size', error);
       return undefined;
     }
   }
@@ -326,18 +350,6 @@ export default class DaiTracker extends nrvideo.VideoTracker {
       nrvideo.Log.warn('DaiTracker: Failed to extract cue points', error);
     }
     return null;
-  }
-
-  extractTimedMetadata(event) {
-    try {
-      return {
-        type: event.getType(),
-        data: event.getData(),
-      };
-    } catch (error) {
-      nrvideo.Log.warn('DaiTracker: Failed to extract timed metadata', error);
-      return {};
-    }
   }
 
   getTrackerName() {
@@ -404,6 +416,10 @@ export default class DaiTracker extends nrvideo.VideoTracker {
    * the break object alone misses the first moments of a pre-roll — long enough
    * for a timeupdate to report CONTENT_START before any content has been shown.
    * The cue points, known ahead of playback, cover that window.
+   *
+   * Known limitation: cue points are a VOD facility in DAI. On a live stream
+   * there are none, so this degrades to the break object alone and a live
+   * pre-roll can still report CONTENT_START a moment early.
    */
   isAdPlaying() {
     if (this.adBreakData) return true;

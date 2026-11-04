@@ -1,4 +1,5 @@
 import DaiTracker from '../../ads/dai';
+import nrvideo from '@newrelic/video-core';
 
 jest.mock('@newrelic/video-core', () => {
   class VideoTracker {
@@ -41,7 +42,31 @@ const StreamEventType = {
   CUEPOINTS_CHANGED: 'cuepointsChanged', TIMED_METADATA: 'timedMetadata',
 };
 
+// Every StreamEvent type DaiTracker subscribes to. TIMED_METADATA is
+// deliberately absent — see 'does not subscribe to TIMED_METADATA'.
+const HANDLED_EVENT_TYPES = [
+  StreamEventType.LOADED,
+  StreamEventType.STREAM_INITIALIZED,
+  StreamEventType.ERROR,
+  StreamEventType.AD_BREAK_STARTED,
+  StreamEventType.AD_BREAK_ENDED,
+  StreamEventType.AD_PERIOD_STARTED,
+  StreamEventType.AD_PERIOD_ENDED,
+  StreamEventType.STARTED,
+  StreamEventType.FIRST_QUARTILE,
+  StreamEventType.MIDPOINT,
+  StreamEventType.THIRD_QUARTILE,
+  StreamEventType.COMPLETE,
+  StreamEventType.SKIPPED,
+  StreamEventType.PAUSED,
+  StreamEventType.RESUMED,
+  StreamEventType.CLICK,
+  StreamEventType.VIDEO_CLICKED,
+  StreamEventType.CUEPOINTS_CHANGED,
+];
+
 beforeEach(() => {
+  jest.clearAllMocks();
   global.google = { ima: { dai: { api: { StreamEvent: { Type: StreamEventType } } } } };
 });
 
@@ -60,17 +85,37 @@ function createMockTag() {
 }
 
 describe('DaiTracker — construction & lifecycle', () => {
-  it('registers a listener for every StreamEvent.Type on construction', () => {
+  it('subscribes to exactly the StreamEvent types it handles', () => {
     const sm = createMockStreamManager();
     new DaiTracker(sm, { tag: createMockTag() });
-    expect(sm.addEventListener).toHaveBeenCalledTimes(Object.keys(StreamEventType).length);
+    const subscribed = sm.addEventListener.mock.calls.map(([type]) => type).sort();
+    expect(subscribed).toEqual([...HANDLED_EVENT_TYPES].sort());
+  });
+
+  // Optional chaining does not protect an UNDECLARED identifier, so
+  // `!google?.ima...` threw a ReferenceError out of the constructor when the
+  // IMA SDK had not been loaded — contradicting the README's documented
+  // no-op-with-a-warning behaviour.
+  it('warns instead of throwing when the IMA DAI SDK is absent', () => {
+    delete global.google;
+    const sm = createMockStreamManager();
+    let tracker;
+    expect(() => { tracker = new DaiTracker(sm, { tag: createMockTag() }); }).not.toThrow();
+    expect(nrvideo.Log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('DAI API not available')
+    );
+    expect(sm.addEventListener).not.toHaveBeenCalled();
+    // And it must stay inert rather than half-wired.
+    expect(() => tracker.unregisterListeners()).not.toThrow();
+    expect(tracker.isAdPlaying()).toBe(false);
   });
 
   it('removes all listeners on unregisterListeners()', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
     tracker.unregisterListeners();
-    expect(sm.removeEventListener).toHaveBeenCalledTimes(Object.keys(StreamEventType).length);
+    const removed = sm.removeEventListener.mock.calls.map(([type]) => type).sort();
+    expect(removed).toEqual([...HANDLED_EVENT_TYPES].sort());
   });
 
   // LOADED only captures the stitched stream. It must NOT emit an ad request:
@@ -195,6 +240,55 @@ describe('DaiTracker — construction & lifecycle', () => {
     );
   });
 
+  // StreamEvent.ERROR is predominantly stream-level — "Stream initialization
+  // failed... 404" means nothing plays at all. Reporting it only on the ad
+  // tracker hides the integration's most severe failure from content error and
+  // startup-failure analysis, because goError() sets hadStartupError only for
+  // non-ad trackers.
+  it('ERROR is reported on the content tracker, not just as an ad error', () => {
+    const sm = createMockStreamManager();
+    const contentTracker = { sendError: jest.fn(), getBitrate: () => null };
+    const tracker = new DaiTracker(sm, { tag: createMockTag(), contentTracker });
+    jest.spyOn(tracker, 'sendError');
+
+    sm._emit(StreamEventType.ERROR, {
+      getStreamData: () => ({ errorMessage: 'Stream initialization failed. 404' }),
+    });
+
+    expect(contentTracker.sendError).toHaveBeenCalledWith(
+      expect.objectContaining({ errorMessage: 'Stream initialization failed. 404' })
+    );
+    // No ad break is open, so this is purely a content failure.
+    expect(tracker.sendError).not.toHaveBeenCalled();
+  });
+
+  it('ERROR during an ad break is reported as both an ad and a content error', () => {
+    const sm = createMockStreamManager();
+    const contentTracker = { sendError: jest.fn(), getBitrate: () => null };
+    const tracker = new DaiTracker(sm, { tag: createMockTag(), contentTracker });
+    jest.spyOn(tracker, 'sendError');
+
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    sm._emit(StreamEventType.ERROR, {
+      getStreamData: () => ({ errorMessage: 'mid-break failure' }),
+    });
+
+    expect(tracker.sendError).toHaveBeenCalled();
+    expect(contentTracker.sendError).toHaveBeenCalled();
+  });
+
+  it('ERROR still reports on itself when no content tracker is wired', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    jest.spyOn(tracker, 'sendError');
+    sm._emit(StreamEventType.ERROR, {
+      getStreamData: () => ({ errorMessage: 'orphan failure' }),
+    });
+    expect(tracker.sendError).toHaveBeenCalledWith(
+      expect.objectContaining({ errorMessage: 'orphan failure' })
+    );
+  });
+
   it('ERROR with a throwing event object falls back to a generic message, not a crash', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
@@ -244,31 +338,50 @@ describe('DaiTracker — construction & lifecycle', () => {
   // cuePoints gates content events since the pre-roll guard was added, so a
   // list left over from a previous stream would treat real content as an ad.
   // CUEPOINTS_CHANGED never fires for an ad-free stream, so LOADED must reset.
-  it('forgets the previous stream\'s cue points when a new stream loads', () => {
+  function loadStream(sm, url) {
+    sm._emit(StreamEventType.LOADED, {
+      getStreamData: () => ({ streamId: url, url, cuepoints: null }),
+    });
+  }
+
+  // The live SDK fires CUEPOINTS_CHANGED *before* LOADED, so a blanket reset on
+  // LOADED would throw away the cue points belonging to the stream being loaded
+  // — and with them the pre-roll protection they exist to provide.
+  it('keeps cue points that arrived before the stream they belong to loaded', () => {
     const sm = createMockStreamManager();
     sm.getStreamTime = () => 5;
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
     sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
       getStreamData: () => ({ cuepoints: [{ start: 0, end: 10.01, played: false }] }),
     });
+    loadStream(sm, 'https://x/master.m3u8');
+    expect(tracker.getAdCuePoints()).toHaveLength(1);
+    expect(tracker.isAdPlaying()).toBe(true);
+  });
+
+  it('forgets the previous stream\'s cue points when a different stream loads', () => {
+    const sm = createMockStreamManager();
+    sm.getStreamTime = () => 5;
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
+      getStreamData: () => ({ cuepoints: [{ start: 0, end: 10.01, played: false }] }),
+    });
+    loadStream(sm, 'https://x/master.m3u8');
     expect(tracker.isAdPlaying()).toBe(true);
 
-    // A second, ad-free stream.
-    sm._emit(StreamEventType.LOADED, {
-      getStreamData: () => ({ streamId: 's2', url: 'https://y/master.m3u8', cuepoints: null }),
-    });
+    // A second, ad-free stream: CUEPOINTS_CHANGED never fires for it.
+    loadStream(sm, 'https://y/master.m3u8');
     expect(tracker.getAdCuePoints()).toEqual([]);
     expect(tracker.isAdPlaying()).toBe(false);
   });
 
-  it('forgets ad and break state when a new stream loads', () => {
+  it('forgets ad and break state when a different stream loads', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    loadStream(sm, 'https://x/master.m3u8');
     sm._emit(StreamEventType.AD_BREAK_STARTED, {});
     sm._emit(StreamEventType.STARTED, { getAd: () => makeAd() });
-    sm._emit(StreamEventType.LOADED, {
-      getStreamData: () => ({ streamId: 's2', url: 'https://y/master.m3u8' }),
-    });
+    loadStream(sm, 'https://y/master.m3u8');
     expect(tracker.getCurrentAd()).toBeNull();
     expect(tracker.getCurrentAdBreak()).toBeNull();
     expect(tracker.getVideoId()).toBeNull();
@@ -565,16 +678,14 @@ describe('DaiTracker — cue points, metadata, getters', () => {
     sends.forEach((m) => expect(tracker[m]).not.toHaveBeenCalled());
   });
 
-  it('TIMED_METADATA extracts type/data without sending anything', () => {
+  // TIMED_METADATA is deliberately not subscribed: its payload is not reachable
+  // from a StreamEvent (no getType/getData on the live prototype), nothing read
+  // the value, and in DAI timed metadata flows INTO the SDK rather than out.
+  it('does not subscribe to TIMED_METADATA', () => {
     const sm = createMockStreamManager();
-    const tracker = new DaiTracker(sm, { tag: createMockTag() });
-    const sends = [
-      'sendRequest', 'sendStart', 'sendEnd', 'sendAdBreakStart', 'sendAdBreakEnd',
-      'sendAdQuartile', 'sendAdClick', 'sendError', 'sendDownload', 'sendPause', 'sendResume',
-    ];
-    sends.forEach((m) => jest.spyOn(tracker, m));
-    sm._emit(StreamEventType.TIMED_METADATA, { getType: () => 'ID3', getData: () => ({ cue: 'x' }) });
-    sends.forEach((m) => expect(tracker[m]).not.toHaveBeenCalled());
+    new DaiTracker(sm, { tag: createMockTag() });
+    const subscribed = sm.addEventListener.mock.calls.map(([type]) => type);
+    expect(subscribed).not.toContain(StreamEventType.TIMED_METADATA);
   });
 
   it('getPlayhead() uses streamManager.getStreamTime() when available', () => {
