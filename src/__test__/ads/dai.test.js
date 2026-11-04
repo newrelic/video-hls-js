@@ -251,3 +251,71 @@ describe('DaiTracker — ad playback events', () => {
     expect(tracker.getVideoId()).toBe('ad2');
   });
 });
+
+describe('DaiTracker — cue points, metadata, getters', () => {
+  it('CUEPOINTS_CHANGED updates getAdCuePoints() without sending anything', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    sm._emit(StreamEventType.CUEPOINTS_CHANGED, { getCuepoints: () => [10, 30, -1] });
+    expect(tracker.getAdCuePoints()).toEqual([10, 30, -1]);
+  });
+
+  it('TIMED_METADATA extracts type/data without sending anything', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    const sends = [
+      'sendRequest', 'sendStart', 'sendEnd', 'sendAdBreakStart', 'sendAdBreakEnd',
+      'sendAdQuartile', 'sendAdClick', 'sendError', 'sendDownload', 'sendPause', 'sendResume',
+    ];
+    sends.forEach((m) => jest.spyOn(tracker, m));
+    sm._emit(StreamEventType.TIMED_METADATA, { getType: () => 'ID3', getData: () => ({ cue: 'x' }) });
+    sends.forEach((m) => expect(tracker[m]).not.toHaveBeenCalled());
+  });
+
+  it('getPlayhead() uses streamManager.getStreamTime() when available', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    expect(tracker.getPlayhead()).toBe(12300); // 12.3 * 1000, from createMockStreamManager
+  });
+
+  it('getPlayhead() falls back to tag.currentTime when getStreamTime throws', () => {
+    const sm = createMockStreamManager();
+    sm.getStreamTime = jest.fn(() => { throw new Error('not ready'); });
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    expect(tracker.getPlayhead()).toBe(3000); // tag.currentTime (3) * 1000
+  });
+
+  it('getStreamType() infers "live" from Infinity duration, "vod" otherwise', () => {
+    const live = new DaiTracker(createMockStreamManager(), { tag: { ...createMockTag(), duration: Infinity } });
+    const vod = new DaiTracker(createMockStreamManager(), { tag: createMockTag() });
+    expect(live.getStreamType()).toBe('live');
+    expect(vod.getStreamType()).toBe('vod');
+    expect(live.isLiveStream()).toBe(true);
+  });
+
+  it('isMuted() reflects tag.muted', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: { ...createMockTag(), muted: true } });
+    expect(tracker.isMuted()).toBe(true);
+  });
+
+  it('getBitrate()/getRenditionBitrate() delegate to options.contentTracker when provided', () => {
+    const sm = createMockStreamManager();
+    const contentTracker = { getBitrate: jest.fn(() => 512000) };
+    const tracker = new DaiTracker(sm, { tag: createMockTag(), contentTracker });
+    expect(tracker.getBitrate()).toBe(512000);
+    expect(tracker.getRenditionBitrate()).toBe(512000);
+  });
+
+  it('getBitrate() returns null when no contentTracker is provided', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    expect(tracker.getBitrate()).toBeNull();
+  });
+
+  it('DaiTracker.isUsing() detects a StreamManager-shaped object', () => {
+    expect(DaiTracker.isUsing(createMockStreamManager())).toBe(true);
+    expect(DaiTracker.isUsing({})).toBe(false);
+    expect(DaiTracker.isUsing(null)).toBe(false);
+  });
+});

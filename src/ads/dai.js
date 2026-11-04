@@ -20,7 +20,7 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   static isUsing(streamManager) {
-    return false;
+    return typeof streamManager?.getStreamTime === 'function';
   }
 
   registerListeners() {
@@ -144,9 +144,13 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     this.sendAdClick({ url: this.getClickThroughUrl() });
   }
 
-  onCuePointsChanged() {}
+  onCuePointsChanged(event) {
+    this.cuePoints = this.extractCuePoints(event);
+  }
 
-  onTimedMetadata() {}
+  onTimedMetadata(event) {
+    this.timedMetadata = this.extractTimedMetadata(event);
+  }
 
   extractStreamData(event) {
     try {
@@ -210,6 +214,27 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     } catch (error) {
       nrvideo.Log.warn('DaiTracker: Failed to extract error data', error);
       return { errorMessage: 'Unknown DAI error' };
+    }
+  }
+
+  extractCuePoints(event) {
+    try {
+      return event.getCuepoints() || [];
+    } catch (error) {
+      nrvideo.Log.warn('DaiTracker: Failed to extract cue points', error);
+      return [];
+    }
+  }
+
+  extractTimedMetadata(event) {
+    try {
+      return {
+        type: event.getType(),
+        data: event.getData(),
+      };
+    } catch (error) {
+      nrvideo.Log.warn('DaiTracker: Failed to extract timed metadata', error);
+      return {};
     }
   }
 
@@ -280,6 +305,44 @@ export default class DaiTracker extends nrvideo.VideoTracker {
 
   getCurrentAd() {
     return this.currentAdData;
+  }
+
+  getAdCuePoints() {
+    return this.cuePoints;
+  }
+
+  getPlayhead() {
+    try {
+      return this.player.getStreamTime() * 1000;
+    } catch (error) {
+      return this.tag.currentTime * 1000;
+    }
+  }
+
+  isMuted() {
+    return this.tag.muted;
+  }
+
+  getRenditionHeight() {
+    return null;
+  }
+
+  getRenditionWidth() {
+    return null;
+  }
+
+  // The stitched stream is decoded by the same hls.js instance during ads, so
+  // quality data lives on the content tracker, not the StreamManager.
+  getBitrate() {
+    return this.contentTracker?.getBitrate() ?? null;
+  }
+
+  getRenditionBitrate() {
+    return this.contentTracker?.getBitrate() ?? null;
+  }
+
+  isLiveStream() {
+    return this.getStreamType() === 'live';
   }
 
   getStreamData() {
