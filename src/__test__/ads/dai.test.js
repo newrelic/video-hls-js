@@ -73,14 +73,17 @@ describe('DaiTracker — construction & lifecycle', () => {
     expect(sm.removeEventListener).toHaveBeenCalledTimes(Object.keys(StreamEventType).length);
   });
 
-  it('LOADED extracts stream data and calls sendRequest()', () => {
+  // LOADED only captures the stitched stream. It must NOT emit an ad request:
+  // that would consume video-core's per-ad isRequested flag that AD_START
+  // depends on. See 'requests before every ad start'.
+  it('LOADED captures stream data without emitting an ad request', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
     jest.spyOn(tracker, 'sendRequest');
     const event = { getStreamData: () => ({ streamId: 's1', url: 'https://x/master.m3u8', adTagParameters: {} }) };
     sm._emit(StreamEventType.LOADED, event);
-    expect(tracker.sendRequest).toHaveBeenCalled();
     expect(tracker.getSrc()).toBe('https://x/master.m3u8');
+    expect(tracker.sendRequest).not.toHaveBeenCalled();
   });
 
   it('STREAM_INITIALIZED calls sendDownload({ state: "stream-initialized" })', () => {
@@ -332,6 +335,36 @@ describe('DaiTracker — ad playback events', () => {
     startAd(tracker, sm, { getClickThroughUrl: () => 'https://advertiser.example' });
     sm._emit(StreamEventType.CLICK, {});
     expect(tracker.sendAdClick).toHaveBeenCalledWith({ url: 'https://advertiser.example' });
+  });
+
+  // video-core gates AD_START on state.isRequested, and clears that flag on
+  // both AD_END and AD_BREAK_END. So every ad must open with its own
+  // sendRequest(), or only the session's first ad ever reports a start/end.
+  it('requests before every ad start, not once per stream', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    const calls = [];
+    jest.spyOn(tracker, 'sendRequest').mockImplementation(() => calls.push('request'));
+    jest.spyOn(tracker, 'sendStart').mockImplementation(() => calls.push('start'));
+    jest.spyOn(tracker, 'sendEnd').mockImplementation(() => calls.push('end'));
+
+    // Two ads in one pod, then a second break with one more.
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    sm._emit(StreamEventType.STARTED, { getAd: () => makeAd() });
+    sm._emit(StreamEventType.COMPLETE, {});
+    sm._emit(StreamEventType.STARTED, { getAd: () => makeAd({ getAdId: () => 'ad2' }) });
+    sm._emit(StreamEventType.COMPLETE, {});
+    sm._emit(StreamEventType.AD_BREAK_ENDED, {});
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    sm._emit(StreamEventType.STARTED, { getAd: () => makeAd({ getAdId: () => 'ad3' }) });
+    sm._emit(StreamEventType.COMPLETE, {});
+    sm._emit(StreamEventType.AD_BREAK_ENDED, {});
+
+    expect(calls).toEqual([
+      'request', 'start', 'end',
+      'request', 'start', 'end',
+      'request', 'start', 'end',
+    ]);
   });
 
   it('a second ad break does not see stale data from the first', () => {

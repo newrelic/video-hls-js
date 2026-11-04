@@ -71,8 +71,10 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   onStreamLoaded(event) {
+    // Capture the stitched stream only. This is not an ad request: emitting one
+    // here would also consume video-core's isRequested flag, which AD_START
+    // depends on, and the flag is per-ad (see onAdStarted).
     this.streamData = this.extractStreamData(event);
-    this.sendRequest();
   }
 
   onStreamInitialized() {
@@ -120,6 +122,10 @@ export default class DaiTracker extends nrvideo.VideoTracker {
         this.adBreakData.adCount = this.currentAdData.adCount;
       }
     }
+    // Each ad needs its own request: video-core gates AD_START on
+    // state.isRequested and clears it on both AD_END and AD_BREAK_END, so
+    // without this only the session's first ad would ever report a start.
+    this.sendRequest();
     this.sendStart();
   }
 
