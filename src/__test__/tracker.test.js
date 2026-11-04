@@ -536,6 +536,42 @@ describe('HLSTracker', () => {
       };
     }
 
+    // Under SSAI tag.currentTime is STREAM time, which includes every ad played
+    // so far, so reporting it as contentPlayhead overstates content progress by
+    // the cumulative ad duration. The SDK converts via contentTimeForStreamTime.
+    it('reports content playhead in content time when the ad tracker can convert', () => {
+      tracker.adsTracker = {
+        isAd: () => true,
+        getCurrentAdBreak: () => null,
+        isAdPlaying: () => false,
+        // 30s of stream, 10s of which was an ad.
+        contentTimeForStreamTime: (streamTime) => streamTime - 10,
+      };
+      mockVideoElement.currentTime = 30;
+      expect(tracker.getPlayhead()).toBe(20000);
+    });
+
+    it('falls back to stream time when the ad tracker cannot convert', () => {
+      tracker.adsTracker = { isAd: () => true, getCurrentAdBreak: () => null };
+      mockVideoElement.currentTime = 30;
+      expect(tracker.getPlayhead()).toBe(30000);
+    });
+
+    it('falls back to stream time when conversion returns a non-finite value', () => {
+      tracker.adsTracker = {
+        isAd: () => true,
+        getCurrentAdBreak: () => null,
+        contentTimeForStreamTime: () => NaN,
+      };
+      mockVideoElement.currentTime = 30;
+      expect(tracker.getPlayhead()).toBe(30000);
+    });
+
+    it('reports stream time unchanged when there is no ad tracker at all', () => {
+      mockVideoElement.currentTime = 30;
+      expect(tracker.getPlayhead()).toBe(30000);
+    });
+
     it('isAdsTrackerActive() is false with no adsTracker', () => {
       expect(tracker.isAdsTrackerActive()).toBe(false);
     });
