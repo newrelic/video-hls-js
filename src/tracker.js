@@ -127,6 +127,23 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     return this.player.preload;
   }
 
+  /**
+   * True while an ad is actually on screen, so content QoE events can stand
+   * down. Scoped to the current ad break rather than the ad tracker's
+   * permanent isAd() flag — with SSAI the ad tracker stays attached for the
+   * whole session, and content pause/seek/buffer must keep reporting between
+   * breaks.
+   */
+  isAdsTrackerActive() {
+    if (!this.adsTracker || !this.adsTracker.isAd || !this.adsTracker.isAd()) {
+      return false;
+    }
+    if (typeof this.adsTracker.getCurrentAdBreak === 'function') {
+      return this.adsTracker.getCurrentAdBreak() != null;
+    }
+    return true;
+  }
+
   registerListeners() {
     // Guard: Ensure HLS instance exists before registering listeners
     if (!this.player) {
@@ -272,19 +289,23 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   onPlaying() {
+    if (this.isAdsTrackerActive()) return;
     this.sendResume();
     this.sendBufferEnd();
   }
 
   onPause() {
+    if (this.isAdsTrackerActive()) return;
     this.sendPause();
   }
 
   onSeeking() {
+    if (this.isAdsTrackerActive()) return;
     this.sendSeekStart();
   }
 
   onSeeked() {
+    if (this.isAdsTrackerActive()) return;
     this.sendSeekEnd();
   }
 
@@ -324,6 +345,7 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   onWaiting() {
+    if (this.isAdsTrackerActive()) return;
     if (
       this.tag.networkState === this.tag.NETWORK_LOADING &&
       this.tag.readyState < this.tag.HAVE_FUTURE_DATA

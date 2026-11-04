@@ -527,4 +527,72 @@ describe('HLSTracker', () => {
       expect(tracker.getSegmentDownloadBitrate()).toBe(999);
     });
   });
+
+  describe('ad-break-scoped content guard', () => {
+    function makeFakeDaiTracker(currentAdBreak) {
+      return {
+        isAd: () => true,
+        getCurrentAdBreak: () => currentAdBreak,
+      };
+    }
+
+    it('isAdsTrackerActive() is false with no adsTracker', () => {
+      expect(tracker.isAdsTrackerActive()).toBe(false);
+    });
+
+    it('isAdsTrackerActive() is false between ad breaks even though isAd() is permanently true', () => {
+      tracker.adsTracker = makeFakeDaiTracker(null);
+      expect(tracker.isAdsTrackerActive()).toBe(false);
+    });
+
+    it('isAdsTrackerActive() is true while an ad break is in progress', () => {
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      expect(tracker.isAdsTrackerActive()).toBe(true);
+    });
+
+    it('isAdsTrackerActive() falls back to isAd() for ad trackers without getCurrentAdBreak', () => {
+      tracker.adsTracker = { isAd: () => true };
+      expect(tracker.isAdsTrackerActive()).toBe(true);
+    });
+
+    it('onPause() is suppressed during an ad break and resumes firing once it ends', () => {
+      jest.spyOn(tracker, 'sendPause');
+      const fakeDai = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.adsTracker = fakeDai;
+      tracker.onPause();
+      expect(tracker.sendPause).not.toHaveBeenCalled();
+
+      fakeDai.getCurrentAdBreak = () => null; // AD_BREAK_ENDED fired
+      tracker.onPause();
+      expect(tracker.sendPause).toHaveBeenCalledTimes(1);
+    });
+
+    it('onSeeking()/onSeeked() are suppressed during an ad break', () => {
+      jest.spyOn(tracker, 'sendSeekStart');
+      jest.spyOn(tracker, 'sendSeekEnd');
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onSeeking();
+      tracker.onSeeked();
+      expect(tracker.sendSeekStart).not.toHaveBeenCalled();
+      expect(tracker.sendSeekEnd).not.toHaveBeenCalled();
+    });
+
+    it('onWaiting() is suppressed during an ad break', () => {
+      jest.spyOn(tracker, 'sendBufferStart');
+      mockVideoElement.networkState = mockVideoElement.NETWORK_LOADING;
+      mockVideoElement.readyState = 0;
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onWaiting();
+      expect(tracker.sendBufferStart).not.toHaveBeenCalled();
+    });
+
+    it('onPlaying() is suppressed during an ad break', () => {
+      jest.spyOn(tracker, 'sendResume');
+      jest.spyOn(tracker, 'sendBufferEnd');
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onPlaying();
+      expect(tracker.sendResume).not.toHaveBeenCalled();
+      expect(tracker.sendBufferEnd).not.toHaveBeenCalled();
+    });
+  });
 });
