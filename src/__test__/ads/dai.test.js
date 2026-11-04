@@ -147,3 +147,107 @@ describe('DaiTracker — construction & lifecycle', () => {
     expect(tracker.sendError).toHaveBeenCalledWith(expect.objectContaining({ errorMessage: 'Unknown DAI error' }));
   });
 });
+
+describe('DaiTracker — ad playback events', () => {
+  function startAd(tracker, sm, adOverrides = {}) {
+    sm._emit(StreamEventType.AD_BREAK_STARTED, { getAdBreak: () => ({ id: 'b1', ads: [{}] }) });
+    sm._emit(StreamEventType.STARTED, {
+      getAd: () => ({
+        getAdId: () => 'ad1',
+        getCreativeId: () => 'c1',
+        getDuration: () => 15,
+        getTitle: () => 'My Ad',
+        getClickThroughUrl: () => 'https://x',
+        ...adOverrides,
+      }),
+    });
+  }
+
+  it('STARTED extracts ad data and calls sendStart()', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    jest.spyOn(tracker, 'sendStart');
+    startAd(tracker, sm);
+    expect(tracker.sendStart).toHaveBeenCalled();
+    expect(tracker.getVideoId()).toBe('ad1');
+    expect(tracker.getTitle()).toBe('My Ad');
+  });
+
+  it.each([
+    [StreamEventType.FIRST_QUARTILE, 1],
+    [StreamEventType.MIDPOINT, 2],
+    [StreamEventType.THIRD_QUARTILE, 3],
+  ])('%s calls sendAdQuartile({ quartile: %i })', (type, quartile) => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    jest.spyOn(tracker, 'sendAdQuartile');
+    startAd(tracker, sm);
+    sm._emit(type, {});
+    expect(tracker.sendAdQuartile).toHaveBeenCalledWith({ quartile });
+  });
+
+  it('COMPLETE calls sendEnd() and clears the current ad', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    startAd(tracker, sm);
+    jest.spyOn(tracker, 'sendEnd');
+    sm._emit(StreamEventType.COMPLETE, {});
+    expect(tracker.sendEnd).toHaveBeenCalledWith();
+    expect(tracker.getCurrentAd()).toBeNull();
+  });
+
+  it('SKIPPED calls sendEnd({ skipped: true }) and clears the current ad', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    startAd(tracker, sm);
+    jest.spyOn(tracker, 'sendEnd');
+    sm._emit(StreamEventType.SKIPPED, {});
+    expect(tracker.sendEnd).toHaveBeenCalledWith({ skipped: true });
+    expect(tracker.getCurrentAd()).toBeNull();
+  });
+
+  it('PAUSED calls sendPause(), RESUMED calls sendResume()', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    jest.spyOn(tracker, 'sendPause');
+    jest.spyOn(tracker, 'sendResume');
+    startAd(tracker, sm);
+    sm._emit(StreamEventType.PAUSED, {});
+    sm._emit(StreamEventType.RESUMED, {});
+    expect(tracker.sendPause).toHaveBeenCalled();
+    expect(tracker.sendResume).toHaveBeenCalled();
+  });
+
+  it.each([StreamEventType.CLICK, StreamEventType.VIDEO_CLICKED])(
+    '%s calls sendAdClick with the click-through url',
+    (type) => {
+      const sm = createMockStreamManager();
+      const tracker = new DaiTracker(sm, { tag: createMockTag() });
+      jest.spyOn(tracker, 'sendAdClick');
+      startAd(tracker, sm);
+      sm._emit(type, {});
+      expect(tracker.sendAdClick).toHaveBeenCalledWith({ url: 'https://x' });
+    }
+  );
+
+  it.each([
+    [2, 'pre'],
+    [60, 'mid'],
+    [117, 'post'], // duration (120) - 10 < currentTime
+  ])('classifies ad position at currentTime %i as "%s"', (currentTime, expected) => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: { ...createMockTag(), currentTime, duration: 120 } });
+    startAd(tracker, sm);
+    expect(tracker.getCurrentAd().position).toBe(expected);
+  });
+
+  it('a second ad break does not see stale data from the first', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    startAd(tracker, sm, { getAdId: () => 'ad1' });
+    sm._emit(StreamEventType.COMPLETE, {});
+    sm._emit(StreamEventType.AD_BREAK_ENDED, {});
+    startAd(tracker, sm, { getAdId: () => 'ad2' });
+    expect(tracker.getVideoId()).toBe('ad2');
+  });
+});

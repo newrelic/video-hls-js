@@ -105,23 +105,44 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     // Deliberately empty: the break may still have more ads in it.
   }
 
-  onAdStarted() {}
+  onAdStarted(event) {
+    this.currentAdData = this.extractAdData(event);
+    this.sendStart();
+  }
 
-  onAdFirstQuartile() {}
+  onAdFirstQuartile() {
+    this.sendAdQuartile({ quartile: 1 });
+  }
 
-  onAdMidpoint() {}
+  onAdMidpoint() {
+    this.sendAdQuartile({ quartile: 2 });
+  }
 
-  onAdThirdQuartile() {}
+  onAdThirdQuartile() {
+    this.sendAdQuartile({ quartile: 3 });
+  }
 
-  onAdComplete() {}
+  onAdComplete() {
+    this.sendEnd();
+    this.currentAdData = null;
+  }
 
-  onAdSkipped() {}
+  onAdSkipped() {
+    this.sendEnd({ skipped: true });
+    this.currentAdData = null;
+  }
 
-  onAdPaused() {}
+  onAdPaused() {
+    this.sendPause();
+  }
 
-  onAdResumed() {}
+  onAdResumed() {
+    this.sendResume();
+  }
 
-  onAdClicked() {}
+  onAdClicked() {
+    this.sendAdClick({ url: this.getClickThroughUrl() });
+  }
 
   onCuePointsChanged() {}
 
@@ -153,6 +174,27 @@ export default class DaiTracker extends nrvideo.VideoTracker {
       };
     } catch (error) {
       nrvideo.Log.warn('DaiTracker: Failed to extract ad break data', error);
+      return {};
+    }
+  }
+
+  extractAdData(event) {
+    try {
+      const ad = event.getAd();
+      return {
+        adId: ad?.getAdId(),
+        creativeId: ad?.getCreativeId(),
+        duration: ad?.getDuration(),
+        title: ad?.getTitle(),
+        description: ad?.getDescription?.(),
+        advertiserName: ad?.getAdvertiserName?.(),
+        clickThroughUrl: ad?.getClickThroughUrl(),
+        dealId: ad?.getDealId?.(),
+        wrapperAdIds: ad?.getWrapperAdIds?.(),
+        position: this.getAdPosition(),
+      };
+    } catch (error) {
+      nrvideo.Log.warn('DaiTracker: Failed to extract ad data', error);
       return {};
     }
   }
@@ -195,6 +237,27 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     return this.streamData?.url ?? null;
   }
 
+  getVideoId() {
+    return this.currentAdData?.adId ?? null;
+  }
+
+  getAdCreativeId() {
+    return this.currentAdData?.creativeId ?? null;
+  }
+
+  getTitle() {
+    return this.currentAdData?.title ?? null;
+  }
+
+  getDuration() {
+    const duration = this.currentAdData?.duration;
+    return duration === undefined || duration === null ? null : duration * 1000;
+  }
+
+  getClickThroughUrl() {
+    return this.currentAdData?.clickThroughUrl ?? null;
+  }
+
   getStreamType() {
     if (this.streamData?.streamType) return this.streamData.streamType;
     return this.tag?.duration === Infinity ? 'live' : 'vod';
@@ -213,6 +276,10 @@ export default class DaiTracker extends nrvideo.VideoTracker {
 
   getCurrentAdBreak() {
     return this.adBreakData;
+  }
+
+  getCurrentAd() {
+    return this.currentAdData;
   }
 
   getStreamData() {
