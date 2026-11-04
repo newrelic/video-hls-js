@@ -1,4 +1,4 @@
-import HLSTracker from '../index';
+import HLSTracker, { DaiTracker } from '../index';
 import Hls from 'hls.js';
 
 const mockTag = {
@@ -65,5 +65,19 @@ describe('HLSTracker Index Export', () => {
     // Event methods
     expect(typeof tracker.registerListeners).toBe('function');
     expect(typeof tracker.unregisterListeners).toBe('function');
+  });
+});
+
+describe('DaiTracker Index Export', () => {
+  it('should export DaiTracker as a named export', () => {
+    expect(DaiTracker).toBeDefined();
+    expect(typeof DaiTracker).toBe('function');
+  });
+
+  // The UMD bundle is built with libraryExport: 'default', so window.HLSTracker
+  // is the class itself and named exports are unreachable from a script tag.
+  // Script-tag consumers reach DAI via HLSTracker.DaiTracker.
+  it('should expose DaiTracker as a static on HLSTracker for UMD consumers', () => {
+    expect(HLSTracker.DaiTracker).toBe(DaiTracker);
   });
 });
