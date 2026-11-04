@@ -313,6 +313,54 @@ describe('DaiTracker — construction & lifecycle', () => {
     );
   });
 
+  // The SDK's errorMessage embeds the full DAI request URL. Its query string
+  // carries identifiers — ua, uach, sid, and in real integrations ppid and
+  // cust_params — and video-core's obfuscation rules are opt-in per integrator,
+  // so shipping it verbatim puts user identifiers in NRDB by default.
+  it('strips the query string from URLs in the SDK error message', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    jest.spyOn(tracker, 'sendError');
+    sm._emit(StreamEventType.ERROR, {
+      getStreamData: () => ({
+        errorMessage:
+          'Stream initialization failed. HTTP status code: 404 with URL: ' +
+          'https://pubads.g.doubleclick.net/ondemand/hls/content/1/vid/x/streams' +
+          '?ppid=user-4821&cust_params=uid%3D99&ua=Mozilla%2F5.0&sid=ABC-123',
+      }),
+    });
+    const { errorMessage } = tracker.sendError.mock.calls[0][0];
+    expect(errorMessage).toContain('HTTP status code: 404');
+    expect(errorMessage).toContain('/ondemand/hls/content/1/vid/x/streams');
+    expect(errorMessage).not.toContain('ppid');
+    expect(errorMessage).not.toContain('cust_params');
+    expect(errorMessage).not.toContain('user-4821');
+    expect(errorMessage).not.toContain('sid=');
+  });
+
+  it('caps a runaway error message', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    jest.spyOn(tracker, 'sendError');
+    sm._emit(StreamEventType.ERROR, {
+      getStreamData: () => ({ errorMessage: 'x'.repeat(5000) }),
+    });
+    const { errorMessage } = tracker.sendError.mock.calls[0][0];
+    expect(errorMessage.length).toBeLessThanOrEqual(512);
+  });
+
+  it('leaves a plain error message untouched', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    jest.spyOn(tracker, 'sendError');
+    sm._emit(StreamEventType.ERROR, {
+      getStreamData: () => ({ errorMessage: 'The stream is inactive.' }),
+    });
+    expect(tracker.sendError).toHaveBeenCalledWith(
+      expect.objectContaining({ errorMessage: 'The stream is inactive.' })
+    );
+  });
+
   it('ERROR with a throwing event object falls back to a generic message, not a crash', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });

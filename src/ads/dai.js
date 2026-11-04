@@ -347,11 +347,30 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   extractErrorData(event) {
     try {
       const message = event.getStreamData?.()?.errorMessage;
-      if (message) return { errorMessage: String(message) };
+      if (message) return { errorMessage: this.sanitizeErrorMessage(message) };
     } catch (error) {
       nrvideo.Log.warn('DaiTracker: Failed to extract error data', error);
     }
     return { errorMessage: 'Unknown DAI error' };
+  }
+
+  /**
+   * The SDK's errorMessage embeds the full DAI request URL, whose query string
+   * carries identifiers — ua, uach, sid, and in real integrations ppid and
+   * cust_params. video-core's obfuscation rules are opt-in per integrator, so
+   * verbatim this would put user identifiers in NRDB by default. Keep scheme,
+   * host and path, which is what makes the error diagnosable, and drop the
+   * query. Capped as a backstop against an unbounded message.
+   */
+  sanitizeErrorMessage(message) {
+    const MAX_LENGTH = 512;
+    const stripped = String(message).replace(
+      /(https?:\/\/[^\s?#]*)[?#][^\s]*/g,
+      '$1'
+    );
+    return stripped.length > MAX_LENGTH
+      ? `${stripped.slice(0, MAX_LENGTH - 1)}…`
+      : stripped;
   }
 
   /**
