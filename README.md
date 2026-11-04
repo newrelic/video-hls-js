@@ -283,14 +283,26 @@ streamManager.requestStream(request);
 
 Live streams work identically — use a `LiveStreamRequest` with an `assetKey` instead.
 
-`setAdsTracker()` is what links the two: it marks `DaiTracker` as an ad tracker and funnels its events into the content tracker's session, so ads and content share one `viewId`. While an ad break is on screen, content pause/resume/seek/buffering events are suppressed so ad time is not counted as content time; they resume automatically when the break ends.
+`setAdsTracker()` is what links the two: it marks `DaiTracker` as an ad tracker and funnels its events into the content tracker's session, so ads and content share one `viewId`.
 
 **Constructor options**
 
 | Option | Required | Purpose |
 | --- | --- | --- |
-| `tag` | Yes | The `<video>` element. Used for playhead fallback, mute state and VOD/live detection. |
-| `contentTracker` | No | Your `HLSTracker` instance. Only affects bitrate attribution during ads — the stitched stream is decoded by the same hls.js instance, so quality data lives on the content tracker. Omit it and `getBitrate()` returns `null` during ads. |
+| `tag` | Yes | The `<video>` element. Source of stream time, mute state and VOD/live detection. |
+| `contentTracker` | No | Your `HLSTracker` instance. The stitched stream is decoded by the same hls.js instance, so quality data lives on the content tracker: pass this and ad events carry `adBitrate`, `adRenditionHeight`, `adRenditionWidth` and `adRenditionName`. Omit it and those are `null` during ads. |
+
+#### What changes in your data
+
+Attaching a `DaiTracker` changes four things about content reporting. All of them only apply while an ads tracker is attached — behaviour without one is unchanged.
+
+**Content events stand down during a break.** Content pause, resume, seek and buffering are suppressed while an ad is on screen, and `CONTENT_START` is held until the break ends, so a pre-roll is not reported as content playback. They resume automatically afterwards.
+
+**A transition already in progress still completes.** If content was buffering or seeking when the break began, that buffer/seek is closed at the real resume moment rather than held open — otherwise the whole ad pod would be billed to content rebuffering.
+
+**`contentPlayhead` and `contentDuration` are content time, not stream time.** A stitched stream's clock includes every ad played so far, so these are converted via the SDK's `contentTimeForStreamTime`. On a 794s stream carrying 60s of ads, `contentDuration` reports 734s.
+
+**DAI stream errors are reported as content errors as well as ad errors.** A failed stream request means nothing plays, and New Relic derives startup-failure metrics from content errors only. If a break is open the error is reported on both. Error messages have query strings stripped from any embedded request URL, because those carry identifiers such as `ppid` and `cust_params`.
 
 **Script-tag (UMD) consumers** reach the class as a static on the global, since the UMD bundle exposes only the default export:
 
@@ -302,6 +314,11 @@ var daiTracker = new HLSTracker.DaiTracker(streamManager, {
 ```
 
 A complete runnable example is in [`samples/dai/index.html`](samples/dai/index.html).
+
+#### Limitations
+
+- **Live pre-rolls may report `CONTENT_START` a moment early.** The pre-roll guard relies on DAI cue points, which the SDK provides for VOD only. On a live stream the guard falls back to the SDK's ad-break events, and those arrive just after playback has already entered the ad.
+- **Ad position on live streams is unverified.** `adPosition` comes from the IMA ad pod index. If the SDK reports an index for live pods that this tracker has not seen, a live pre-roll may be labelled `mid`.
 
 ## Best Practices
 
