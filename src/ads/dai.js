@@ -15,6 +15,7 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     this.contentTracker = options?.contentTracker || null;
     this.currentAdData = null;
     this.adBreakData = null;
+    this.adBreakFromPeriod = false;
     this.streamData = null;
     this.cuePoints = [];
   }
@@ -71,6 +72,16 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   onStreamLoaded(event) {
+    // Every field below is per-stream. cuePoints especially: it gates content
+    // events via isAdPlaying(), and CUEPOINTS_CHANGED never fires for an
+    // ad-free stream, so a list left from a previous stream would make the new
+    // stream's opening content look like an ad.
+    this.currentAdData = null;
+    this.adBreakData = null;
+    this.adBreakFromPeriod = false;
+    this.cuePoints = [];
+    this.timedMetadata = null;
+
     // Capture the stitched stream only. This is not an ad request: emitting one
     // here would also consume video-core's isRequested flag, which AD_START
     // depends on, and the flag is per-ad (see onAdStarted).
@@ -94,22 +105,42 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   onAdBreakEnded() {
+    // An ad still in flight has to be ended first. video-core's goAdBreakEnd()
+    // clears isRequested but not isStarted, and only sendEnd() resets that, so
+    // leaving a started ad unfinished here blocks AD_START for every later ad
+    // in the session. Happens whenever a break ends mid-ad: a seek out of a
+    // mid-roll, an ad error, a source switch.
+    if (this.currentAdData) {
+      this.sendEnd();
+      this.currentAdData = null;
+    }
+
     // Attributes go out here rather than at AD_BREAK_STARTED: the break's
     // details are only known once its first ad has been seen (see onAdStarted).
     this.sendAdBreakEnd(this.adBreakData ? { ...this.adBreakData } : undefined);
     this.adBreakData = null;
+    this.adBreakFromPeriod = false;
   }
 
   onAdPeriodStarted(event) {
     // Bumpers and some live breaks fire only a period start, with no
     // AD_BREAK_STARTED to open the break.
     if (!this.adBreakData) {
+      this.adBreakFromPeriod = true;
       this.onAdBreakStarted(event);
     }
   }
 
   onAdPeriodEnded() {
-    // Deliberately empty: the break may still have more ads in it.
+    // A break this tracker opened from a period event gets no AD_BREAK_ENDED —
+    // that is the premise of the fallback above — so the period end is its only
+    // closing path. Without this the break stays open for the rest of the
+    // session and the content guard suppresses all content telemetry.
+    // Periods nested inside an SDK-announced break are left alone: that break
+    // may still have more ads, and its own AD_BREAK_ENDED will close it.
+    if (this.adBreakFromPeriod) {
+      this.onAdBreakEnded();
+    }
   }
 
   onAdStarted(event) {
@@ -383,8 +414,16 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     const streamTime = this.getPlayhead() / 1000;
     if (!Number.isFinite(streamTime)) return false;
 
+    // Skip windows already played: seeking back into a watched pre-roll gets no
+    // fresh ad telemetry, so suppressing content there would lose it outright.
     return cuePoints.some(
-      (cue) => streamTime >= cue.start && streamTime < cue.end
+      (cue) =>
+        cue?.played !== true &&
+        typeof cue?.start === 'number' &&
+        typeof cue?.end === 'number' &&
+        cue.end > cue.start &&
+        streamTime >= cue.start &&
+        streamTime < cue.end
     );
   }
 

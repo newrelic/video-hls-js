@@ -627,6 +627,53 @@ describe('HLSTracker', () => {
       expect(tracker.sendStart).toHaveBeenCalledTimes(1);
     });
 
+    // Suppressing the CLOSE of a transition that is already open is what bills
+    // the whole ad break to content: video-core adds (stopTime - startTime) to
+    // totalRebufferingTime, and goSeekEnd needs the matching isSeeking. So an
+    // open transition must be allowed to close even mid-break.
+    it('closes a content buffer that was already open when the break began', () => {
+      jest.spyOn(tracker, 'sendBufferEnd');
+      tracker.state = { isBuffering: true };
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onCanPlayThrough();
+      expect(tracker.sendBufferEnd).toHaveBeenCalled();
+    });
+
+    it('closes an open content seek that straddles the break boundary', () => {
+      jest.spyOn(tracker, 'sendSeekEnd');
+      tracker.state = { isSeeking: true };
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onSeeked();
+      expect(tracker.sendSeekEnd).toHaveBeenCalled();
+    });
+
+    it('still suppresses a content buffer end when no buffer is open', () => {
+      jest.spyOn(tracker, 'sendBufferEnd');
+      tracker.state = { isBuffering: false };
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onCanPlayThrough();
+      tracker.onBufferAppended('hlsBufferAppended', {});
+      expect(tracker.sendBufferEnd).not.toHaveBeenCalled();
+    });
+
+    it('still suppresses a content seek end when no seek is open', () => {
+      jest.spyOn(tracker, 'sendSeekEnd');
+      tracker.state = { isSeeking: false };
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onSeeked();
+      expect(tracker.sendSeekEnd).not.toHaveBeenCalled();
+    });
+
+    it('onPlaying() closes an open buffer mid-break but never resumes content', () => {
+      jest.spyOn(tracker, 'sendResume');
+      jest.spyOn(tracker, 'sendBufferEnd');
+      tracker.state = { isBuffering: true };
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onPlaying();
+      expect(tracker.sendBufferEnd).toHaveBeenCalled();
+      expect(tracker.sendResume).not.toHaveBeenCalled();
+    });
+
     it('onCanPlayThrough() does not report a content buffer end during an ad break', () => {
       jest.spyOn(tracker, 'sendBufferEnd');
       tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });

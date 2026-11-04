@@ -149,6 +149,17 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     return true;
   }
 
+  /**
+   * Whether a content transition that is ALREADY OPEN may be closed during an
+   * ad break. It always may: video-core bills (stopTime - startTime) to
+   * totalRebufferingTime and pairs goSeekEnd with isSeeking, so holding a
+   * transition open across a break charges the whole pod to content. A stall
+   * that begins just before an ad boundary is a common SSAI case.
+   */
+  canCloseContentTransition(flag) {
+    return !this.isAdsTrackerActive() || !!this.state?.[flag];
+  }
+
   registerListeners() {
     // Guard: Ensure HLS instance exists before registering listeners
     if (!this.player) {
@@ -294,9 +305,10 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   onPlaying() {
-    if (this.isAdsTrackerActive()) return;
-    this.sendResume();
-    this.sendBufferEnd();
+    // Content is not resuming during an ad — but a buffer opened before the
+    // break still has to be closed here, at the real resume moment.
+    if (!this.isAdsTrackerActive()) this.sendResume();
+    if (this.canCloseContentTransition('isBuffering')) this.sendBufferEnd();
   }
 
   onPause() {
@@ -310,7 +322,7 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   onSeeked() {
-    if (this.isAdsTrackerActive()) return;
+    if (!this.canCloseContentTransition('isSeeking')) return;
     this.sendSeekEnd();
   }
 
@@ -379,12 +391,12 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   onBufferAppended(event, data) {
-    if (this.isAdsTrackerActive()) return;
+    if (!this.canCloseContentTransition('isBuffering')) return;
     this.sendBufferEnd();
   }
 
   onCanPlayThrough() {
-    if (this.isAdsTrackerActive()) return;
+    if (!this.canCloseContentTransition('isBuffering')) return;
     this.sendBufferEnd();
   }
 }

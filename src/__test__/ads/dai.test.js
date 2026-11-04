@@ -153,7 +153,22 @@ describe('DaiTracker — construction & lifecycle', () => {
     expect(tracker.sendAdBreakStart).not.toHaveBeenCalled();
   });
 
-  it('AD_PERIOD_ENDED does not end the break or send anything (more ads may follow)', () => {
+  // A break opened by a period event has no AD_BREAK_ENDED coming — that is the
+  // whole premise of the period fallback — so the period end must close it, or
+  // the break stays open forever and silences content telemetry for good.
+  it('AD_PERIOD_ENDED closes a break that a period event opened', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    jest.spyOn(tracker, 'sendAdBreakEnd');
+    sm._emit(StreamEventType.AD_PERIOD_STARTED, {});
+    expect(tracker.getCurrentAdBreak()).not.toBeNull();
+    sm._emit(StreamEventType.AD_PERIOD_ENDED, {});
+    expect(tracker.sendAdBreakEnd).toHaveBeenCalled();
+    expect(tracker.getCurrentAdBreak()).toBeNull();
+    expect(tracker.isAdPlaying()).toBe(false);
+  });
+
+  it('AD_PERIOD_ENDED leaves an SDK-announced break open (more ads may follow)', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
     sm._emit(StreamEventType.AD_BREAK_STARTED, { getAdBreak: () => ({ id: 'b1', ads: [] }) });
@@ -224,6 +239,51 @@ describe('DaiTracker — construction & lifecycle', () => {
     });
     expect(tracker.getCurrentAdBreak()).toBeNull();
     expect(tracker.isAdPlaying()).toBe(true);
+  });
+
+  // cuePoints gates content events since the pre-roll guard was added, so a
+  // list left over from a previous stream would treat real content as an ad.
+  // CUEPOINTS_CHANGED never fires for an ad-free stream, so LOADED must reset.
+  it('forgets the previous stream\'s cue points when a new stream loads', () => {
+    const sm = createMockStreamManager();
+    sm.getStreamTime = () => 5;
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
+      getStreamData: () => ({ cuepoints: [{ start: 0, end: 10.01, played: false }] }),
+    });
+    expect(tracker.isAdPlaying()).toBe(true);
+
+    // A second, ad-free stream.
+    sm._emit(StreamEventType.LOADED, {
+      getStreamData: () => ({ streamId: 's2', url: 'https://y/master.m3u8', cuepoints: null }),
+    });
+    expect(tracker.getAdCuePoints()).toEqual([]);
+    expect(tracker.isAdPlaying()).toBe(false);
+  });
+
+  it('forgets ad and break state when a new stream loads', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    sm._emit(StreamEventType.STARTED, { getAd: () => makeAd() });
+    sm._emit(StreamEventType.LOADED, {
+      getStreamData: () => ({ streamId: 's2', url: 'https://y/master.m3u8' }),
+    });
+    expect(tracker.getCurrentAd()).toBeNull();
+    expect(tracker.getCurrentAdBreak()).toBeNull();
+    expect(tracker.getVideoId()).toBeNull();
+  });
+
+  it('does not treat an already-played cue point window as an ad', () => {
+    const sm = createMockStreamManager();
+    sm.getStreamTime = () => 5;
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    // Seeking back into a watched pre-roll: the window is marked played, and
+    // no ad telemetry will accompany it, so content must keep reporting.
+    sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
+      getStreamData: () => ({ cuepoints: [{ start: 0, end: 10.01, played: true }] }),
+    });
+    expect(tracker.isAdPlaying()).toBe(false);
   });
 
   it('knows content is playing once the stream time leaves every cue point window', () => {
@@ -453,6 +513,32 @@ describe('DaiTracker — ad playback events', () => {
     ]);
   });
 
+  it('ends an ad that is still in flight when its break ends', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    const order = [];
+    jest.spyOn(tracker, 'sendEnd').mockImplementation(() => order.push('end'));
+    jest.spyOn(tracker, 'sendAdBreakEnd').mockImplementation(() => order.push('breakEnd'));
+
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    sm._emit(StreamEventType.STARTED, { getAd: () => makeAd() });
+    sm._emit(StreamEventType.AD_BREAK_ENDED, {}); // no COMPLETE
+
+    expect(order).toEqual(['end', 'breakEnd']);
+    expect(tracker.getCurrentAd()).toBeNull();
+  });
+
+  it('does not double-end an ad that already completed', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    sm._emit(StreamEventType.STARTED, { getAd: () => makeAd() });
+    sm._emit(StreamEventType.COMPLETE, {});
+    jest.spyOn(tracker, 'sendEnd');
+    sm._emit(StreamEventType.AD_BREAK_ENDED, {});
+    expect(tracker.sendEnd).not.toHaveBeenCalled();
+  });
+
   it('a second ad break does not see stale data from the first', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
@@ -593,6 +679,28 @@ describe('DaiTracker — against video-core\'s real event gating', () => {
     sm._emit(StreamEventType.FIRST_QUARTILE, {});
     sm._emit(StreamEventType.COMPLETE, {});
   }
+
+  // goAdBreakEnd() clears isRequested but NOT isStarted; only goEnd() (via
+  // sendEnd) resets that. So an ad still in flight when its break ends — a seek
+  // out of a mid-roll, an ad error — would otherwise block AD_START for every
+  // later ad in the session.
+  it('still reports later ads when an earlier ad never completed', () => {
+    const { sm, reported } = gatedTracker();
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    sm._emit(StreamEventType.STARTED, {
+      getAd: () => ({ getAdId: () => 'ad1', getAdPodInfo: () => ({ getPodIndex: () => 0 }) }),
+    });
+    sm._emit(StreamEventType.AD_BREAK_ENDED, {}); // no COMPLETE for ad1
+    const mark = reported.length;
+
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    playAd(sm, 'ad2');
+    sm._emit(StreamEventType.AD_BREAK_ENDED, {});
+
+    const second = reported.slice(mark);
+    expect(second).toContain('AD_START');
+    expect(second.indexOf('AD_START')).toBeLessThan(second.indexOf('AD_QUARTILE1'));
+  });
 
   it('reports a start and an end for every ad in a multi-ad pod', () => {
     const { sm, reported } = gatedTracker();
