@@ -447,7 +447,7 @@ describe('HLSTracker', () => {
 
     it('should handle HLS error event with code', () => {
       tracker.sendError = jest.fn();
-      tracker.onError('error', { code: 404, fatal: false });
+      tracker.onError('error', { code: 404, fatal: true });
       expect(tracker.sendError).toHaveBeenCalledWith({
         errorCode: 404,
         errorMessage: undefined,
@@ -467,6 +467,40 @@ describe('HLSTracker', () => {
       tracker.sendError = jest.fn();
       tracker.onError('error', {});
       expect(tracker.sendError).not.toHaveBeenCalled();
+    });
+
+    // hls.js reports recoverable conditions it handles itself on the same ERROR
+    // event as genuine failures — bufferStalledError, aborted,
+    // bufferAppendNoProgress. Reporting those set numberOfErrors,
+    // hadPlaybackError, and (for anything before CONTENT_START) hadStartupError
+    // on sessions that played fine: one live capture showed hadStartupError
+    // true with a 245ms startup, and a seek alone produced two 'aborted'
+    // errors.
+    it('should not report a non-fatal hls.js error', () => {
+      tracker.sendError = jest.fn();
+      tracker.onError('error', {
+        code: 404,
+        details: 'bufferStalledError',
+        fatal: false,
+      });
+      expect(tracker.sendError).not.toHaveBeenCalled();
+    });
+
+    it('should report a fatal hls.js error', () => {
+      tracker.sendError = jest.fn();
+      tracker.onError('error', { details: 'manifestLoadError', fatal: true });
+      expect(tracker.sendError).toHaveBeenCalledWith({
+        errorCode: undefined,
+        errorMessage: 'manifestLoadError',
+      });
+    });
+
+    // Fail open: only an explicit fatal:false is treated as recoverable, so a
+    // caller that omits the flag never loses an error.
+    it('should report an error that does not state whether it is fatal', () => {
+      tracker.sendError = jest.fn();
+      tracker.onError('error', { details: 'internalException' });
+      expect(tracker.sendError).toHaveBeenCalled();
     });
 
     it('should handle video element error event', () => {

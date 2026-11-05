@@ -361,13 +361,26 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     this.sendSeekEnd();
   }
 
+  /**
+   * hls.js raises recoverable conditions it then handles itself —
+   * bufferStalledError, aborted, bufferAppendNoProgress — on the same ERROR
+   * event as genuine failures, distinguished only by `fatal`. Reporting the
+   * recoverable ones charges numberOfErrors and hadPlaybackError, and anything
+   * landing before CONTENT_START also sets hadStartupError, to sessions that
+   * played perfectly well: one live capture reported hadStartupError on a
+   * 245ms startup, and an ordinary seek produced two 'aborted' errors.
+   *
+   * Only an explicit `fatal: false` is dropped, so a caller that omits the flag
+   * still has its error reported.
+   */
   onError(event, data) {
-    // HLS.js error event provides data object with error details
+    if (data?.fatal === false) return;
+
     const errorCode = data?.code;
-    const errorMessage = data?.message || data?.reason || data?.details ;
+    const errorMessage = data?.message || data?.reason || data?.details;
     if (errorCode || errorMessage) {
-      this.sendError({ errorCode, errorMessage});
-    } 
+      this.sendError({ errorCode, errorMessage });
+    }
   }
 
   onVideoError(e) {
