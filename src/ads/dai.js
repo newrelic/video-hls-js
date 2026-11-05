@@ -386,11 +386,18 @@ export default class DaiTracker extends nrvideo.VideoTracker {
    * verbatim this would put user identifiers in NRDB by default. Keep scheme,
    * host and path, which is what makes the error diagnosable, and drop the
    * query. Capped as a backstop against an unbounded message.
+   *
+   * The query/fragment group is optional on purpose. Requiring it made every
+   * 'http://' in the message start a scan to the end of the token that then
+   * failed and backtracked, which is quadratic in the message length
+   * (CodeQL js/polynomial-redos). Optional, the match always succeeds at the
+   * first attempt and never backtracks, so this is linear — and the output is
+   * unchanged, since a URL with no query is replaced by itself.
    */
   sanitizeErrorMessage(message) {
     const MAX_LENGTH = 512;
     const stripped = String(message).replace(
-      /(https?:\/\/[^\s?#]*)[?#][^\s]*/g,
+      /(https?:\/\/[^\s?#]*)(?:[?#]\S*)?/g,
       '$1'
     );
     return stripped.length > MAX_LENGTH

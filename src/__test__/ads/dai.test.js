@@ -374,6 +374,25 @@ describe('DaiTracker — construction & lifecycle', () => {
     expect(errorMessage).not.toContain('sid=');
   });
 
+  // CodeQL js/polynomial-redos (high) on PR #25: the query-stripping regex
+  // required the [?#] to match, so every 'http://' in the message started a
+  // scan to the end of the token that then failed and backtracked — quadratic
+  // in the message length. Measured on the old pattern: 1000 repetitions 5ms,
+  // 2000 18ms, 4000 70ms, 8000 283ms, 20000 1694ms. The SDK's errorMessage is
+  // unbounded (one live capture carried 2.5KB of embedded playlist), and the
+  // cap is applied after the regex, so nothing bounded the work.
+  it('sanitizes a pathological error message in linear time', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+
+    const pathological = 'http://'.repeat(20000);
+    const start = Date.now();
+    tracker.sanitizeErrorMessage(pathological);
+    const elapsed = Date.now() - start;
+
+    expect(elapsed).toBeLessThan(400);
+  });
+
   it('caps a runaway error message', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
