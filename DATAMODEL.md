@@ -125,16 +125,17 @@ An Attribute is a piece of data associated with an event. Attributes provide add
 | adRenditionHeight        | Rendition actual Height (before re-scaling).                                                                                                       |
 | adRenditionWidth         | Rendition actual Width (before re-scaling).                                                                                                        |
 | adDuration               | Duration of the video, in ms.                                                                                                                      |
-| adPlayhead               | Playhead (currentTime) of the video, in ms.                                                                                                        |
+| adPlayhead               | Playhead of the ad, in ms, measured from the start of the ad — not the stitched stream position. Bounded by `adDuration`.                           |
 | adLanguage               | Language of the ad video. We recommend using locale notation, e.g., en_US.                                                                         |
 | adSrc                    | URL of the resource being played.                                                                                                                  |
 | adCdn                    | The CDN serving the content.                                                                                                                       |
 | adIsMuted                | True if the video is currently muted.                                                                                                              |
 | adFps                    | Current FPS (Frames per second).                                                                                                                   |
 | adQuartile               | Quartile of the ad. 0 before first, 1 after first quartile, 2 after midpoint, 3 after third quartile, 4 when completed.                            |
-| adPosition               | The position of the ad.                                                                                                                            |
+| adPosition               | The position of the ad: `pre`, `mid` or `post`. With Google DAI this comes from the IMA ad pod index, so it is stable for the whole ad.             |
 | adCreativeId             | The creative ID of the ad.                                                                                                                         |
-| adPartner                | The ad partner, e.g., ima, freewheel.                                                                                                              |
+| adPartner                | The ad partner, e.g., ima, freewheel. `google-dai` for server-side inserted ads.                                                                   |
+| adCount                  | Number of ads in the current ad break. Google DAI only, and absent until the break's first ad is reported, since the SDK does not describe a break up front. |
 | isBackgroundEvent        | If the player is hidden by another window.                                                                                                         |
 | bufferType               | When buffer starts, i.e., initial, seek, pause & connection.                                                                                       |
 | asn                      | Autonomous System Number: a unique number identifying a group of IP networks that serves the content to the end user.                              |
@@ -184,7 +185,7 @@ An Attribute is a piece of data associated with an event. Attributes provide add
 | viewId                   | Trackers will generate unique IDs for every new video iteration.                                                                                   |
 | contentId                | The ID of the video.                                                                                                                               |
 | contentTitle             | The title of the video.                                                                                                                            |
-| errorMessage             | Message describing the error.                                                                                                                      |
+| errorMessage             | Message describing the error. For Google DAI stream errors this is the SDK's own message, with query strings stripped from any embedded request URL (they carry identifiers such as `ppid` and `cust_params`) and capped at 512 characters. |
 | errorCode                | Error code if it's known.                                                                                                                          |
 | isBackgroundEvent        | If the player is hidden by another window.                                                                                                         |
 | contentSrc               | Content source URL.                                                                                                                                |
@@ -206,7 +207,7 @@ An Attribute is a piece of data associated with an event. Attributes provide add
 | AD_ERROR      | Ad video error.      |
 | ERROR         | An error happened.   |
 | CRASH         | App crash happened.  |
-| CONTENT_ERROR | Content video error. |
+| CONTENT_ERROR | Content video error. Only fatal player errors are reported: hls.js raises recoverable conditions it then handles itself (`bufferStalledError`, `aborted`, `bufferAppendNoProgress`) on the same event, and counting those would charge `numberOfErrors`, `hadPlaybackError` and `hadStartupError` to sessions that played fine. |
 
 ### VideoCustomAction
 

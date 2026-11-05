@@ -447,7 +447,7 @@ describe('HLSTracker', () => {
 
     it('should handle HLS error event with code', () => {
       tracker.sendError = jest.fn();
-      tracker.onError('error', { code: 404, fatal: false });
+      tracker.onError('error', { code: 404, fatal: true });
       expect(tracker.sendError).toHaveBeenCalledWith({
         errorCode: 404,
         errorMessage: undefined,
@@ -467,6 +467,40 @@ describe('HLSTracker', () => {
       tracker.sendError = jest.fn();
       tracker.onError('error', {});
       expect(tracker.sendError).not.toHaveBeenCalled();
+    });
+
+    // hls.js reports recoverable conditions it handles itself on the same ERROR
+    // event as genuine failures — bufferStalledError, aborted,
+    // bufferAppendNoProgress. Reporting those set numberOfErrors,
+    // hadPlaybackError, and (for anything before CONTENT_START) hadStartupError
+    // on sessions that played fine: one live capture showed hadStartupError
+    // true with a 245ms startup, and a seek alone produced two 'aborted'
+    // errors.
+    it('should not report a non-fatal hls.js error', () => {
+      tracker.sendError = jest.fn();
+      tracker.onError('error', {
+        code: 404,
+        details: 'bufferStalledError',
+        fatal: false,
+      });
+      expect(tracker.sendError).not.toHaveBeenCalled();
+    });
+
+    it('should report a fatal hls.js error', () => {
+      tracker.sendError = jest.fn();
+      tracker.onError('error', { details: 'manifestLoadError', fatal: true });
+      expect(tracker.sendError).toHaveBeenCalledWith({
+        errorCode: undefined,
+        errorMessage: 'manifestLoadError',
+      });
+    });
+
+    // Fail open: only an explicit fatal:false is treated as recoverable, so a
+    // caller that omits the flag never loses an error.
+    it('should report an error that does not state whether it is fatal', () => {
+      tracker.sendError = jest.fn();
+      tracker.onError('error', { details: 'internalException' });
+      expect(tracker.sendError).toHaveBeenCalled();
     });
 
     it('should handle video element error event', () => {
@@ -525,6 +559,257 @@ describe('HLSTracker', () => {
       tracker._lastFragBandwidth = 999;
       tracker.onFragLoaded('hlsFragLoaded', {});
       expect(tracker.getSegmentDownloadBitrate()).toBe(999);
+    });
+  });
+
+  // hls.js never reports Infinity for a live duration — it reports a growing
+  // DVR window (observed: 80s, 100s, 135s, 170s on a live asset). The only
+  // reliable signal is the parsed level's own live flag.
+  describe('live stream detection', () => {
+    it('reports live from the current level details', () => {
+      mockHlsInstance.currentLevel = 0;
+      mockHlsInstance.levels = [{ bitrate: 1, details: { live: true } }];
+      expect(tracker.isLive()).toBe(true);
+    });
+
+    it('reports not-live for a VOD level', () => {
+      mockHlsInstance.currentLevel = 0;
+      mockHlsInstance.levels = [{ bitrate: 1, details: { live: false } }];
+      expect(tracker.isLive()).toBe(false);
+    });
+
+    it('falls back to any parsed level while the level is still auto', () => {
+      mockHlsInstance.currentLevel = -1;
+      mockHlsInstance.levels = [{ bitrate: 1 }, { bitrate: 2, details: { live: true } }];
+      expect(tracker.isLive()).toBe(true);
+    });
+
+    it('reports unknown rather than guessing before any level is parsed', () => {
+      mockHlsInstance.currentLevel = -1;
+      mockHlsInstance.levels = [];
+      expect(tracker.isLive()).toBeNull();
+    });
+
+    it('does not mistake a growing live duration for VOD', () => {
+      mockHlsInstance.currentLevel = 0;
+      mockHlsInstance.levels = [{ bitrate: 1, details: { live: true } }];
+      mockVideoElement.duration = 170.74; // a real observed live DVR window
+      expect(tracker.isLive()).toBe(true);
+    });
+  });
+
+  describe('ad-break-scoped content guard', () => {
+    function makeFakeDaiTracker(currentAdBreak) {
+      return {
+        isAd: () => true,
+        getCurrentAdBreak: () => currentAdBreak,
+      };
+    }
+
+    // Under SSAI tag.currentTime is STREAM time, which includes every ad played
+    // so far, so reporting it as contentPlayhead overstates content progress by
+    // the cumulative ad duration. The SDK converts via contentTimeForStreamTime.
+    it('reports content playhead in content time when the ad tracker can convert', () => {
+      tracker.adsTracker = {
+        isAd: () => true,
+        getCurrentAdBreak: () => null,
+        isAdPlaying: () => false,
+        // 30s of stream, 10s of which was an ad.
+        contentTimeForStreamTime: (streamTime) => streamTime - 10,
+      };
+      mockVideoElement.currentTime = 30;
+      expect(tracker.getPlayhead()).toBe(20000);
+    });
+
+    it('falls back to stream time when the ad tracker cannot convert', () => {
+      tracker.adsTracker = { isAd: () => true, getCurrentAdBreak: () => null };
+      mockVideoElement.currentTime = 30;
+      expect(tracker.getPlayhead()).toBe(30000);
+    });
+
+    it('falls back to stream time when conversion returns a non-finite value', () => {
+      tracker.adsTracker = {
+        isAd: () => true,
+        getCurrentAdBreak: () => null,
+        contentTimeForStreamTime: () => NaN,
+      };
+      mockVideoElement.currentTime = 30;
+      expect(tracker.getPlayhead()).toBe(30000);
+    });
+
+    it('reports stream time unchanged when there is no ad tracker at all', () => {
+      mockVideoElement.currentTime = 30;
+      expect(tracker.getPlayhead()).toBe(30000);
+    });
+
+    it('isAdsTrackerActive() is false with no adsTracker', () => {
+      expect(tracker.isAdsTrackerActive()).toBe(false);
+    });
+
+    it('isAdsTrackerActive() is false between ad breaks even though isAd() is permanently true', () => {
+      tracker.adsTracker = makeFakeDaiTracker(null);
+      expect(tracker.isAdsTrackerActive()).toBe(false);
+    });
+
+    it('isAdsTrackerActive() is true while an ad break is in progress', () => {
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      expect(tracker.isAdsTrackerActive()).toBe(true);
+    });
+
+    it('isAdsTrackerActive() falls back to isAd() for ad trackers without getCurrentAdBreak', () => {
+      tracker.adsTracker = { isAd: () => true };
+      expect(tracker.isAdsTrackerActive()).toBe(true);
+    });
+
+    // isAdPlaying() also covers the start of a pre-roll, before the SDK has
+    // announced the break — getCurrentAdBreak() is still null there.
+    it('isAdsTrackerActive() prefers isAdPlaying() over getCurrentAdBreak()', () => {
+      tracker.adsTracker = {
+        isAd: () => true,
+        getCurrentAdBreak: () => null,
+        isAdPlaying: () => true,
+      };
+      expect(tracker.isAdsTrackerActive()).toBe(true);
+    });
+
+    it('isAdsTrackerActive() is false when isAdPlaying() says no ad is on screen', () => {
+      tracker.adsTracker = {
+        isAd: () => true,
+        getCurrentAdBreak: () => null,
+        isAdPlaying: () => false,
+      };
+      expect(tracker.isAdsTrackerActive()).toBe(false);
+    });
+
+    it('onPause() is suppressed during an ad break and resumes firing once it ends', () => {
+      jest.spyOn(tracker, 'sendPause');
+      const fakeDai = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.adsTracker = fakeDai;
+      tracker.onPause();
+      expect(tracker.sendPause).not.toHaveBeenCalled();
+
+      fakeDai.getCurrentAdBreak = () => null; // AD_BREAK_ENDED fired
+      tracker.onPause();
+      expect(tracker.sendPause).toHaveBeenCalledTimes(1);
+    });
+
+    it('onSeeking()/onSeeked() are suppressed during an ad break', () => {
+      jest.spyOn(tracker, 'sendSeekStart');
+      jest.spyOn(tracker, 'sendSeekEnd');
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onSeeking();
+      tracker.onSeeked();
+      expect(tracker.sendSeekStart).not.toHaveBeenCalled();
+      expect(tracker.sendSeekEnd).not.toHaveBeenCalled();
+    });
+
+    it('onWaiting() is suppressed during an ad break', () => {
+      jest.spyOn(tracker, 'sendBufferStart');
+      mockVideoElement.networkState = mockVideoElement.NETWORK_LOADING;
+      mockVideoElement.readyState = 0;
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onWaiting();
+      expect(tracker.sendBufferStart).not.toHaveBeenCalled();
+    });
+
+    // Under SSAI the stitched stream's currentTime advances through the ad, so
+    // timeupdate fires during a pre-roll. Reporting CONTENT_START there marks
+    // content as started before any content has been shown, and (because the
+    // ad has not ended yet) excludes the pre-roll from content startup time.
+    it('onTimeupdate() does not report a content start during an ad break', () => {
+      jest.spyOn(tracker, 'sendStart');
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onTimeupdate();
+      expect(tracker.sendStart).not.toHaveBeenCalled();
+    });
+
+    it('onTimeupdate() reports a content start once the break has ended', () => {
+      jest.spyOn(tracker, 'sendStart');
+      const fakeDai = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.adsTracker = fakeDai;
+      tracker.onTimeupdate();
+      fakeDai.getCurrentAdBreak = () => null;
+      tracker.onTimeupdate();
+      expect(tracker.sendStart).toHaveBeenCalledTimes(1);
+    });
+
+    // Suppressing the CLOSE of a transition that is already open is what bills
+    // the whole ad break to content: video-core adds (stopTime - startTime) to
+    // totalRebufferingTime, and goSeekEnd needs the matching isSeeking. So an
+    // open transition must be allowed to close even mid-break.
+    it('closes a content buffer that was already open when the break began', () => {
+      jest.spyOn(tracker, 'sendBufferEnd');
+      tracker.state = { isBuffering: true };
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onCanPlayThrough();
+      expect(tracker.sendBufferEnd).toHaveBeenCalled();
+    });
+
+    it('closes an open content seek that straddles the break boundary', () => {
+      jest.spyOn(tracker, 'sendSeekEnd');
+      tracker.state = { isSeeking: true };
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onSeeked();
+      expect(tracker.sendSeekEnd).toHaveBeenCalled();
+    });
+
+    it('still suppresses a content buffer end when no buffer is open', () => {
+      jest.spyOn(tracker, 'sendBufferEnd');
+      tracker.state = { isBuffering: false };
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onCanPlayThrough();
+      tracker.onBufferAppended('hlsBufferAppended', {});
+      expect(tracker.sendBufferEnd).not.toHaveBeenCalled();
+    });
+
+    it('still suppresses a content seek end when no seek is open', () => {
+      jest.spyOn(tracker, 'sendSeekEnd');
+      tracker.state = { isSeeking: false };
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onSeeked();
+      expect(tracker.sendSeekEnd).not.toHaveBeenCalled();
+    });
+
+    it('onPlaying() closes an open buffer mid-break but never resumes content', () => {
+      jest.spyOn(tracker, 'sendResume');
+      jest.spyOn(tracker, 'sendBufferEnd');
+      tracker.state = { isBuffering: true };
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onPlaying();
+      expect(tracker.sendBufferEnd).toHaveBeenCalled();
+      expect(tracker.sendResume).not.toHaveBeenCalled();
+    });
+
+    it('onCanPlayThrough() does not report a content buffer end during an ad break', () => {
+      jest.spyOn(tracker, 'sendBufferEnd');
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onCanPlayThrough();
+      expect(tracker.sendBufferEnd).not.toHaveBeenCalled();
+    });
+
+    it('onBufferAppended() does not report a content buffer end during an ad break', () => {
+      jest.spyOn(tracker, 'sendBufferEnd');
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onBufferAppended('hlsBufferAppended', {});
+      expect(tracker.sendBufferEnd).not.toHaveBeenCalled();
+    });
+
+    it('onCanPlayThrough()/onBufferAppended() report normally once the break ends', () => {
+      jest.spyOn(tracker, 'sendBufferEnd');
+      const fakeDai = makeFakeDaiTracker(null);
+      tracker.adsTracker = fakeDai;
+      tracker.onCanPlayThrough();
+      tracker.onBufferAppended('hlsBufferAppended', {});
+      expect(tracker.sendBufferEnd).toHaveBeenCalledTimes(2);
+    });
+
+    it('onPlaying() is suppressed during an ad break', () => {
+      jest.spyOn(tracker, 'sendResume');
+      jest.spyOn(tracker, 'sendBufferEnd');
+      tracker.adsTracker = makeFakeDaiTracker({ adBreakId: 'b1' });
+      tracker.onPlaying();
+      expect(tracker.sendResume).not.toHaveBeenCalled();
+      expect(tracker.sendBufferEnd).not.toHaveBeenCalled();
     });
   });
 });

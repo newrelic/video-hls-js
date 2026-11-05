@@ -41,12 +41,29 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     return version;
   }
 
+  /**
+   * Content playhead, in ms. With server-side ad insertion the media element's
+   * currentTime is STREAM time, which includes every ad played so far, so
+   * reporting it directly overstates content progress by the cumulative ad
+   * duration. An ads tracker that can convert is asked to; anything else — no
+   * ads, or an ad framework without a conversion — reports the clock as-is.
+   */
   getPlayhead() {
-    return this.tag.currentTime * 1000;
+    return this.toContentTime(this.tag.currentTime) * 1000;
   }
 
+  toContentTime(streamTime) {
+    const converted = this.adsTracker?.contentTimeForStreamTime?.(streamTime);
+    return typeof converted === 'number' && Number.isFinite(converted)
+      ? converted
+      : streamTime;
+  }
+
+  // Same stream-vs-content distinction as getPlayhead: a stitched VOD's
+  // duration includes every inserted ad. Infinity (live) passes through, since
+  // Number.isFinite rejects the conversion.
   getDuration() {
-    return this.tag.duration * 1000;
+    return this.toContentTime(this.tag.duration) * 1000;
   }
 
   getSrc() {
@@ -115,6 +132,24 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     return bw && bw > 0 ? Math.round(bw) : null;
   }
 
+  /**
+   * True for a live stream, false for VOD, null until a level is parsed.
+   *
+   * hls.js never reports Infinity for a live duration — it reports a growing
+   * DVR window (observed on a live DAI asset: 80s, 100s, 135s, 170s), so a
+   * duration-based test labels every live stream as VOD. The parsed level's own
+   * live flag is the reliable signal.
+   */
+  isLive() {
+    const levels = this.player?.levels;
+    if (!levels?.length) return null;
+
+    const level =
+      levels[this.player.currentLevel] ?? levels.find((l) => l?.details);
+    const live = level?.details?.live;
+    return typeof live === 'boolean' ? live : null;
+  }
+
   getPlayrate() {
     return this.player.playbackRate;
   }
@@ -125,6 +160,39 @@ export default class HLSTracker extends nrvideo.VideoTracker {
 
   getPreload() {
     return this.player.preload;
+  }
+
+  /**
+   * True while an ad is actually on screen, so content QoE events can stand
+   * down. Scoped to the current ad break rather than the ad tracker's
+   * permanent isAd() flag — with SSAI the ad tracker stays attached for the
+   * whole session, and content pause/seek/buffer must keep reporting between
+   * breaks.
+   */
+  isAdsTrackerActive() {
+    if (!this.adsTracker || !this.adsTracker.isAd || !this.adsTracker.isAd()) {
+      return false;
+    }
+    // Preferred: covers the start of a pre-roll, before the ad SDK has
+    // announced the break.
+    if (typeof this.adsTracker.isAdPlaying === 'function') {
+      return this.adsTracker.isAdPlaying();
+    }
+    if (typeof this.adsTracker.getCurrentAdBreak === 'function') {
+      return this.adsTracker.getCurrentAdBreak() != null;
+    }
+    return true;
+  }
+
+  /**
+   * Whether a content transition that is ALREADY OPEN may be closed during an
+   * ad break. It always may: video-core bills (stopTime - startTime) to
+   * totalRebufferingTime and pairs goSeekEnd with isSeeking, so holding a
+   * transition open across a break charges the whole pod to content. A stall
+   * that begins just before an ad boundary is a common SSAI case.
+   */
+  canCloseContentTransition(flag) {
+    return !this.isAdsTrackerActive() || !!this.state?.[flag];
   }
 
   registerListeners() {
@@ -272,29 +340,47 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   onPlaying() {
-    this.sendResume();
-    this.sendBufferEnd();
+    // Content is not resuming during an ad — but a buffer opened before the
+    // break still has to be closed here, at the real resume moment.
+    if (!this.isAdsTrackerActive()) this.sendResume();
+    if (this.canCloseContentTransition('isBuffering')) this.sendBufferEnd();
   }
 
   onPause() {
+    if (this.isAdsTrackerActive()) return;
     this.sendPause();
   }
 
   onSeeking() {
+    if (this.isAdsTrackerActive()) return;
     this.sendSeekStart();
   }
 
   onSeeked() {
+    if (!this.canCloseContentTransition('isSeeking')) return;
     this.sendSeekEnd();
   }
 
+  /**
+   * hls.js raises recoverable conditions it then handles itself —
+   * bufferStalledError, aborted, bufferAppendNoProgress — on the same ERROR
+   * event as genuine failures, distinguished only by `fatal`. Reporting the
+   * recoverable ones charges numberOfErrors and hadPlaybackError, and anything
+   * landing before CONTENT_START also sets hadStartupError, to sessions that
+   * played perfectly well: one live capture reported hadStartupError on a
+   * 245ms startup, and an ordinary seek produced two 'aborted' errors.
+   *
+   * Only an explicit `fatal: false` is dropped, so a caller that omits the flag
+   * still has its error reported.
+   */
   onError(event, data) {
-    // HLS.js error event provides data object with error details
+    if (data?.fatal === false) return;
+
     const errorCode = data?.code;
-    const errorMessage = data?.message || data?.reason || data?.details ;
+    const errorMessage = data?.message || data?.reason || data?.details;
     if (errorCode || errorMessage) {
-      this.sendError({ errorCode, errorMessage});
-    } 
+      this.sendError({ errorCode, errorMessage });
+    }
   }
 
   onVideoError(e) {
@@ -318,12 +404,17 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   onTimeupdate() {
+    // Under SSAI the stitched stream's clock advances through the ad, so
+    // timeupdate fires during a break. Starting content here would mark it
+    // started before any content was shown.
+    if (this.isAdsTrackerActive()) return;
     if (this.getPlayhead() > 0.1) {
       this.sendStart();
     }
   }
 
   onWaiting() {
+    if (this.isAdsTrackerActive()) return;
     if (
       this.tag.networkState === this.tag.NETWORK_LOADING &&
       this.tag.readyState < this.tag.HAVE_FUTURE_DATA
@@ -348,10 +439,12 @@ export default class HLSTracker extends nrvideo.VideoTracker {
   }
 
   onBufferAppended(event, data) {
+    if (!this.canCloseContentTransition('isBuffering')) return;
     this.sendBufferEnd();
   }
 
   onCanPlayThrough() {
+    if (!this.canCloseContentTransition('isBuffering')) return;
     this.sendBufferEnd();
   }
 }
