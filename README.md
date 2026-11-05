@@ -290,7 +290,7 @@ Live streams work identically — use a `LiveStreamRequest` with an `assetKey` i
 | Option | Required | Purpose |
 | --- | --- | --- |
 | `tag` | Yes | The `<video>` element. Source of stream time, mute state and VOD/live detection. |
-| `contentTracker` | No | Your `HLSTracker` instance. The stitched stream is decoded by the same hls.js instance, so quality data lives on the content tracker: pass this and ad events carry `adBitrate`, `adRenditionHeight`, `adRenditionWidth` and `adRenditionName`. Omit it and those are `null` during ads. |
+| `contentTracker` | No | Your `HLSTracker` instance. The stitched stream is decoded by the same hls.js instance, so quality and manifest data live on the content tracker: pass this and ad events carry `adBitrate`, `adRenditionHeight`, `adRenditionWidth`, `adRenditionName`, and `getStreamType()` can distinguish live from VOD. Omit it and those are `null` during ads. |
 
 #### What changes in your data
 

@@ -246,10 +246,12 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   extractStreamData(event) {
     try {
       const streamData = event.getStreamData();
+      // No streamType snapshot here: it is derived from the content tracker's
+      // live flag, which is not reliable this early (no level parsed yet), and
+      // getStreamType() reads it fresh anyway.
       return {
         streamId: streamData?.streamId,
         url: streamData?.url,
-        streamType: this.getStreamType(),
       };
     } catch (error) {
       nrvideo.Log.warn('DaiTracker: Failed to extract stream data', error);
@@ -430,9 +432,18 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     return this.currentAdData?.clickThroughUrl ?? null;
   }
 
+  /**
+   * 'live', 'vod', or null when unknown.
+   *
+   * Comes from the content tracker, which reads hls.js's parsed-manifest live
+   * flag. A DAI live stream's duration is a growing DVR window rather than
+   * Infinity, so a duration-based test reported every live stream as VOD.
+   * StreamData carries no stream type of its own to consult.
+   */
   getStreamType() {
-    if (this.streamData?.streamType) return this.streamData.streamType;
-    return this.tag?.duration === Infinity ? 'live' : 'vod';
+    const live = this.contentTracker?.isLive?.();
+    if (typeof live === 'boolean') return live ? 'live' : 'vod';
+    return null;
   }
 
   // Returns the position captured when the ad started, so it stays constant

@@ -528,6 +528,42 @@ describe('HLSTracker', () => {
     });
   });
 
+  // hls.js never reports Infinity for a live duration — it reports a growing
+  // DVR window (observed: 80s, 100s, 135s, 170s on a live asset). The only
+  // reliable signal is the parsed level's own live flag.
+  describe('live stream detection', () => {
+    it('reports live from the current level details', () => {
+      mockHlsInstance.currentLevel = 0;
+      mockHlsInstance.levels = [{ bitrate: 1, details: { live: true } }];
+      expect(tracker.isLive()).toBe(true);
+    });
+
+    it('reports not-live for a VOD level', () => {
+      mockHlsInstance.currentLevel = 0;
+      mockHlsInstance.levels = [{ bitrate: 1, details: { live: false } }];
+      expect(tracker.isLive()).toBe(false);
+    });
+
+    it('falls back to any parsed level while the level is still auto', () => {
+      mockHlsInstance.currentLevel = -1;
+      mockHlsInstance.levels = [{ bitrate: 1 }, { bitrate: 2, details: { live: true } }];
+      expect(tracker.isLive()).toBe(true);
+    });
+
+    it('reports unknown rather than guessing before any level is parsed', () => {
+      mockHlsInstance.currentLevel = -1;
+      mockHlsInstance.levels = [];
+      expect(tracker.isLive()).toBeNull();
+    });
+
+    it('does not mistake a growing live duration for VOD', () => {
+      mockHlsInstance.currentLevel = 0;
+      mockHlsInstance.levels = [{ bitrate: 1, details: { live: true } }];
+      mockVideoElement.duration = 170.74; // a real observed live DVR window
+      expect(tracker.isLive()).toBe(true);
+    });
+  });
+
   describe('ad-break-scoped content guard', () => {
     function makeFakeDaiTracker(currentAdBreak) {
       return {

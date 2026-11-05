@@ -132,6 +132,24 @@ export default class HLSTracker extends nrvideo.VideoTracker {
     return bw && bw > 0 ? Math.round(bw) : null;
   }
 
+  /**
+   * True for a live stream, false for VOD, null until a level is parsed.
+   *
+   * hls.js never reports Infinity for a live duration — it reports a growing
+   * DVR window (observed on a live DAI asset: 80s, 100s, 135s, 170s), so a
+   * duration-based test labels every live stream as VOD. The parsed level's own
+   * live flag is the reliable signal.
+   */
+  isLive() {
+    const levels = this.player?.levels;
+    if (!levels?.length) return null;
+
+    const level =
+      levels[this.player.currentLevel] ?? levels.find((l) => l?.details);
+    const live = level?.details?.live;
+    return typeof live === 'boolean' ? live : null;
+  }
+
   getPlayrate() {
     return this.player.playbackRate;
   }

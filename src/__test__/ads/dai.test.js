@@ -862,12 +862,39 @@ describe('DaiTracker — cue points, metadata, getters', () => {
     expect(sm.getStreamTime).not.toHaveBeenCalled();
   });
 
-  it('getStreamType() infers "live" from Infinity duration, "vod" otherwise', () => {
-    const live = new DaiTracker(createMockStreamManager(), { tag: { ...createMockTag(), duration: Infinity } });
-    const vod = new DaiTracker(createMockStreamManager(), { tag: createMockTag() });
-    expect(live.getStreamType()).toBe('live');
-    expect(vod.getStreamType()).toBe('vod');
-    expect(live.isLiveStream()).toBe(true);
+  // A DAI live stream's duration is a growing DVR window, never Infinity, so
+  // stream type comes from the content tracker's parsed-manifest live flag.
+  it('getStreamType() reports live from the content tracker', () => {
+    const tracker = new DaiTracker(createMockStreamManager(), {
+      tag: createMockTag(),
+      contentTracker: { getBitrate: () => null, isLive: () => true },
+    });
+    expect(tracker.getStreamType()).toBe('live');
+    expect(tracker.isLiveStream()).toBe(true);
+  });
+
+  it('getStreamType() reports vod from the content tracker', () => {
+    const tracker = new DaiTracker(createMockStreamManager(), {
+      tag: createMockTag(),
+      contentTracker: { getBitrate: () => null, isLive: () => false },
+    });
+    expect(tracker.getStreamType()).toBe('vod');
+    expect(tracker.isLiveStream()).toBe(false);
+  });
+
+  it('getStreamType() does not call a live DVR window VOD', () => {
+    // 170s and growing — what hls.js actually reports for a live stream.
+    const tracker = new DaiTracker(createMockStreamManager(), {
+      tag: { ...createMockTag(), duration: 170.74 },
+      contentTracker: { getBitrate: () => null, isLive: () => true },
+    });
+    expect(tracker.getStreamType()).toBe('live');
+  });
+
+  it('getStreamType() reports unknown rather than guessing VOD', () => {
+    const tracker = new DaiTracker(createMockStreamManager(), { tag: createMockTag() });
+    expect(tracker.getStreamType()).toBeNull();
+    expect(tracker.isLiveStream()).toBe(false);
   });
 
   it('isMuted() reflects tag.muted', () => {
