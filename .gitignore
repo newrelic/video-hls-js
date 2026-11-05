@@ -5,6 +5,7 @@
 .idea
 ext/
 .vscode
+.claude/
 
 # Dependencides
 node_modules
