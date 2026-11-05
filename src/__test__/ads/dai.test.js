@@ -784,6 +784,39 @@ describe('DaiTracker — ad playback events', () => {
     expect(tracker.sendEnd).not.toHaveBeenCalled();
   });
 
+  // Joining a live stream mid-break, the SDK reports quartiles for an ad whose
+  // STARTED we never saw. Emitting them produces unattributable rows with no
+  // adId or adTitle, and makes quartile counts exceed ad-start counts, which
+  // breaks any completion-rate funnel. Observed twice in live telemetry: an
+  // AD_BREAK_START followed by a lone quartile 3 and an AD_BREAK_END.
+  it('does not report a quartile for an ad that never started', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    jest.spyOn(tracker, 'sendAdQuartile');
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    sm._emit(StreamEventType.THIRD_QUARTILE, {});
+    expect(tracker.sendAdQuartile).not.toHaveBeenCalled();
+  });
+
+  it('does not report a quartile arriving after the ad completed', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    startAd(tracker, sm);
+    sm._emit(StreamEventType.COMPLETE, {});
+    jest.spyOn(tracker, 'sendAdQuartile');
+    sm._emit(StreamEventType.MIDPOINT, {});
+    expect(tracker.sendAdQuartile).not.toHaveBeenCalled();
+  });
+
+  it('does not report a click for an ad that never started', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    jest.spyOn(tracker, 'sendAdClick');
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    sm._emit(StreamEventType.CLICK, {});
+    expect(tracker.sendAdClick).not.toHaveBeenCalled();
+  });
+
   it('a second ad break does not see stale data from the first', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
@@ -792,6 +825,71 @@ describe('DaiTracker — ad playback events', () => {
     sm._emit(StreamEventType.AD_BREAK_ENDED, {});
     startAd(tracker, sm, { getAdId: () => 'ad2' });
     expect(tracker.getVideoId()).toBe('ad2');
+  });
+
+  // adPlayhead means progress THROUGH THE CREATIVE and is bounded by
+  // adDuration. Under SSAI the media element's clock is the stitched stream, so
+  // reporting it raw made a 10s mid-roll report an adPlayhead of 325 seconds
+  // (observed live: AD_START 315142ms, AD_END 325236ms on a 10000ms ad).
+  it('getPlayhead() reports progress within the ad, not the stitched stream position', () => {
+    const sm = createMockStreamManager();
+    const tag = createMockTag();
+    const tracker = new DaiTracker(sm, { tag });
+
+    tag.currentTime = 315.142; // mid-roll begins 5m15s into the stitched stream
+    startAd(tracker, sm);
+    expect(tracker.getPlayhead()).toBe(0);
+
+    tag.currentTime = 320.142; // 5s into the ad
+    expect(tracker.getPlayhead()).toBe(5000);
+  });
+
+  it('getPlayhead() goes back to stream time once the ad ends', () => {
+    const sm = createMockStreamManager();
+    const tag = createMockTag();
+    const tracker = new DaiTracker(sm, { tag });
+
+    tag.currentTime = 100;
+    startAd(tracker, sm);
+    tag.currentTime = 110;
+    sm._emit(StreamEventType.COMPLETE, {});
+
+    expect(tracker.getPlayhead()).toBe(110000);
+  });
+
+  // Each ad in a pod rebases, so the second ad does not inherit the first's
+  // offset and report a playhead one ad-length too high.
+  it('rebases the playhead for every ad in a pod', () => {
+    const sm = createMockStreamManager();
+    const tag = createMockTag();
+    const tracker = new DaiTracker(sm, { tag });
+
+    tag.currentTime = 100;
+    startAd(tracker, sm, { getAdId: () => 'ad1' });
+    tag.currentTime = 110;
+    sm._emit(StreamEventType.COMPLETE, {});
+
+    sm._emit(StreamEventType.STARTED, { getAd: () => makeAd({ getAdId: () => 'ad2' }) });
+    tag.currentTime = 113;
+    expect(tracker.getPlayhead()).toBe(3000);
+  });
+
+  // isAdPlaying() compares the cue point windows — which are STREAM times —
+  // against the playhead, so it must not be handed the ad-relative one. Joining
+  // a live break mid-ad, STARTED arrives with no AD_BREAK_STARTED, so
+  // currentAdData is set while adBreakData is null and this path really runs.
+  it('isAdPlaying() matches cue points against stream time while an ad is in flight', () => {
+    const sm = createMockStreamManager();
+    const tag = createMockTag(105);
+    const tracker = new DaiTracker(sm, { tag });
+    sm._emit(StreamEventType.CUEPOINTS_CHANGED, {
+      getStreamData: () => ({ cuepoints: [{ start: 100, end: 110, played: false }] }),
+    });
+
+    sm._emit(StreamEventType.STARTED, { getAd: () => makeAd() });
+
+    expect(tracker.getCurrentAdBreak()).toBeNull();
+    expect(tracker.isAdPlaying()).toBe(true);
   });
 });
 

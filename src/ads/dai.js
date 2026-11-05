@@ -14,10 +14,21 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     this.streamManager = streamManager;
     this.contentTracker = options?.contentTracker || null;
     this.currentAdData = null;
+    this.adStartStreamTime = null;
     this.adBreakData = null;
     this.adBreakFromPeriod = false;
     this.streamData = null;
     this.cuePoints = [];
+  }
+
+  /**
+   * Drops the in-flight ad. The stream-time offset has to go with it, or
+   * getPlayhead() keeps subtracting a finished ad's start and under-reports
+   * content position for the rest of the session.
+   */
+  clearCurrentAd() {
+    this.currentAdData = null;
+    this.adStartStreamTime = null;
   }
 
   registerListeners() {
@@ -91,7 +102,7 @@ export default class DaiTracker extends nrvideo.VideoTracker {
    * This event precedes a stream's cue points and nothing else does.
    */
   onStreamInitialized() {
-    this.currentAdData = null;
+    this.clearCurrentAd();
     this.adBreakData = null;
     this.adBreakFromPeriod = false;
     this.cuePoints = [];
@@ -149,7 +160,7 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     // mid-roll, an ad error, a source switch.
     if (this.currentAdData) {
       this.sendEnd();
-      this.currentAdData = null;
+      this.clearCurrentAd();
     }
 
     // Attributes go out here rather than at AD_BREAK_STARTED: the break's
@@ -182,6 +193,7 @@ export default class DaiTracker extends nrvideo.VideoTracker {
 
   onAdStarted(event) {
     this.currentAdData = this.extractAdData(event);
+    this.adStartStreamTime = (this.tag?.currentTime ?? 0) * 1000;
     // AD_BREAK_STARTED carries no break information at all, so backfill it from
     // the first ad's pod info now that one exists.
     if (this.adBreakData) {
@@ -200,26 +212,39 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     this.sendStart();
   }
 
+  /**
+   * Quartiles and clicks only mean something for an ad we are tracking. Joining
+   * a live stream mid-break, the SDK reports quartiles for an ad whose STARTED
+   * never reached us: those arrive with no adId or adTitle, and counting them
+   * makes quartiles outnumber ad starts, which breaks completion-rate funnels.
+   */
+  hasAdInFlight() {
+    return this.currentAdData != null;
+  }
+
   onAdFirstQuartile() {
+    if (!this.hasAdInFlight()) return;
     this.sendAdQuartile({ quartile: 1 });
   }
 
   onAdMidpoint() {
+    if (!this.hasAdInFlight()) return;
     this.sendAdQuartile({ quartile: 2 });
   }
 
   onAdThirdQuartile() {
+    if (!this.hasAdInFlight()) return;
     this.sendAdQuartile({ quartile: 3 });
   }
 
   onAdComplete() {
     this.sendEnd();
-    this.currentAdData = null;
+    this.clearCurrentAd();
   }
 
   onAdSkipped() {
     this.sendEnd({ skipped: true });
-    this.currentAdData = null;
+    this.clearCurrentAd();
   }
 
   onAdPaused() {
@@ -231,6 +256,7 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   onAdClicked() {
+    if (!this.hasAdInFlight()) return;
     // Omit url rather than send a known null: video-core warns when the key is
     // absent-or-falsy, and the DAI Ad object exposes no clickthrough accessor,
     // so a null would log that warning on every click.
@@ -477,7 +503,7 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     const cuePoints = this.cuePoints;
     if (!cuePoints?.length) return false;
 
-    const streamTime = this.getPlayhead() / 1000;
+    const streamTime = this.getStreamTimeMs() / 1000;
     if (!Number.isFinite(streamTime)) return false;
 
     // Skip windows already played: seeking back into a watched pre-roll gets no
@@ -519,6 +545,18 @@ export default class DaiTracker extends nrvideo.VideoTracker {
    * event handlers, so it must not throw.
    */
   getPlayhead() {
+    const streamTime = this.getStreamTimeMs();
+    if (this.adStartStreamTime == null) return streamTime;
+    return Math.max(0, streamTime - this.adStartStreamTime);
+  }
+
+  /**
+   * The stitched stream's own clock, in ms — the timeline cue points and the
+   * SDK's time conversions are expressed in. Anything comparing against DAI
+   * stream positions wants this, NOT getPlayhead(), which is ad-relative while
+   * an ad is on screen.
+   */
+  getStreamTimeMs() {
     return (this.tag?.currentTime ?? 0) * 1000;
   }
 
