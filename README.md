@@ -281,7 +281,17 @@ request.videoId = 'YOUR_VIDEO_ID';
 streamManager.requestStream(request);
 ```
 
-Live streams work identically — use a `LiveStreamRequest` with an `assetKey` instead.
+**Live streams additionally require you to forward ID3 timed metadata.** Use a `LiveStreamRequest` with an `assetKey`, and hand the stream's in-band ID3 samples to the SDK. A live break is signalled inside the media segments rather than in the cue point list, so without this the SDK never learns a break started and **no ad events fire at all**:
+
+```javascript
+hls.on(Hls.Events.FRAG_PARSING_METADATA, (event, data) => {
+  data?.samples?.forEach((sample) => {
+    streamManager.processMetadata('ID3', sample.data, sample.pts);
+  });
+});
+```
+
+It is harmless to register for VOD, where cue points carry the breaks.
 
 `setAdsTracker()` is what links the two: it marks `DaiTracker` as an ad tracker and funnels its events into the content tracker's session, so ads and content share one `viewId`.
 
@@ -294,13 +304,15 @@ Live streams work identically — use a `LiveStreamRequest` with an `assetKey` i
 
 #### What changes in your data
 
-Attaching a `DaiTracker` changes four things about content reporting. All of them only apply while an ads tracker is attached — behaviour without one is unchanged.
+Attaching a `DaiTracker` changes five things about your data. All of them only apply while an ads tracker is attached — behaviour without one is unchanged.
 
 **Content events stand down during a break.** Content pause, resume, seek and buffering are suppressed while an ad is on screen, and `CONTENT_START` is held until the break ends, so a pre-roll is not reported as content playback. They resume automatically afterwards.
 
 **A transition already in progress still completes.** If content was buffering or seeking when the break began, that buffer/seek is closed at the real resume moment rather than held open — otherwise the whole ad pod would be billed to content rebuffering.
 
 **`contentPlayhead` and `contentDuration` are content time, not stream time.** A stitched stream's clock includes every ad played so far, so these are converted via the SDK's `contentTimeForStreamTime`. On a 794s stream carrying 60s of ads, `contentDuration` reports 734s.
+
+**`adPlayhead` is measured from the start of the ad, not the stitched stream position.** The media element's clock keeps running through an ad under SSAI, so a mid-roll would otherwise report a playhead in the hundreds of seconds for a 10s creative. It is rebased per ad and bounded by `adDuration`.
 
 **DAI stream errors are reported as content errors as well as ad errors.** A failed stream request means nothing plays, and New Relic derives startup-failure metrics from content errors only. If a break is open the error is reported on both. Error messages have query strings stripped from any embedded request URL, because those carry identifiers such as `ppid` and `cust_params`.
 

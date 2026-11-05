@@ -125,7 +125,7 @@ An Attribute is a piece of data associated with an event. Attributes provide add
 | adRenditionHeight        | Rendition actual Height (before re-scaling).                                                                                                       |
 | adRenditionWidth         | Rendition actual Width (before re-scaling).                                                                                                        |
 | adDuration               | Duration of the video, in ms.                                                                                                                      |
-| adPlayhead               | Playhead (currentTime) of the video, in ms.                                                                                                        |
+| adPlayhead               | Playhead of the ad, in ms, measured from the start of the ad — not the stitched stream position. Bounded by `adDuration`.                           |
 | adLanguage               | Language of the ad video. We recommend using locale notation, e.g., en_US.                                                                         |
 | adSrc                    | URL of the resource being played.                                                                                                                  |
 | adCdn                    | The CDN serving the content.                                                                                                                       |
@@ -207,7 +207,7 @@ An Attribute is a piece of data associated with an event. Attributes provide add
 | AD_ERROR      | Ad video error.      |
 | ERROR         | An error happened.   |
 | CRASH         | App crash happened.  |
-| CONTENT_ERROR | Content video error. |
+| CONTENT_ERROR | Content video error. Only fatal player errors are reported: hls.js raises recoverable conditions it then handles itself (`bufferStalledError`, `aborted`, `bufferAppendNoProgress`) on the same event, and counting those would charge `numberOfErrors`, `hadPlaybackError` and `hadStartupError` to sessions that played fine. |
 
 ### VideoCustomAction
 

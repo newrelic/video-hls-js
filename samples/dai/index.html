@@ -99,6 +99,18 @@
         });
         hlsTracker.setAdsTracker(daiTracker);
 
+        // REQUIRED for live streams: forward the stream's in-band ID3 timed
+        // metadata to the SDK. Live ad breaks are signalled inside the media
+        // segments, not in the cue point list, so without this the SDK never
+        // learns a break started and no ad events fire at all. Harmless for
+        // VOD, where cue points carry the breaks.
+        hls.on(Hls.Events.FRAG_PARSING_METADATA, function (event, data) {
+          if (!streamManager || !data || !data.samples) return;
+          data.samples.forEach(function (sample) {
+            streamManager.processMetadata('ID3', sample.data, sample.pts);
+          });
+        });
+
         // The app owns loading the stitched manifest into hls.js.
         streamManager.addEventListener(
           google.ima.dai.api.StreamEvent.Type.LOADED,
