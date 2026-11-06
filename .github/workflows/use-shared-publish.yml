@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   build-and-publish:
+    environment: npm-release
     uses: newrelic/video-core-js/.github/workflows/npm-publish.yml@master
     with:
       s3-path: 'media-agents/browser/hls-js'
