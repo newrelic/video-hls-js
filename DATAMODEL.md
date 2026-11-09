@@ -132,7 +132,7 @@ An Attribute is a piece of data associated with an event. Attributes provide add
 | adIsMuted                | True if the video is currently muted.                                                                                                              |
 | adFps                    | Current FPS (Frames per second).                                                                                                                   |
 | adQuartile               | Quartile of the ad. 0 before first, 1 after first quartile, 2 after midpoint, 3 after third quartile, 4 when completed.                            |
-| adPosition               | The position of the ad: `pre`, `mid` or `post`. With Google DAI this comes from the IMA ad pod index, so it is stable for the whole ad.             |
+| adPosition               | The position of the ad: `pre`, `mid` or `post`. With Google DAI this comes from the IMA ad pod index, so it is stable for the whole ad. See the DAI note below. |
 | adCreativeId             | The creative ID of the ad.                                                                                                                         |
 | adPartner                | The ad partner, e.g., ima, freewheel. `google-dai` for server-side inserted ads.                                                                   |
 | adCount                  | Number of ads in the current ad break. Google DAI only, and absent until the break's first ad is reported, since the SDK does not describe a break up front. |
@@ -150,9 +150,24 @@ An Attribute is a piece of data associated with an event. Attributes provide add
 
 #### Google IMA DAI: where these values come from
 
-The HLS tracker reports DAI ads through `DaiTracker`. Two attributes have a
+The HLS tracker reports DAI ads through `DaiTracker`. Three attributes have a
 source that is easy to guess wrong when reading Google's SDK documentation, so
 they are stated explicitly.
+
+**`adPosition` comes only from `ad.getAdPodInfo().getPodIndex()`.**
+`podIndex === 0` is a pre-roll, `-1` a post-roll, any other number a mid-roll.
+It describes where the *break* sits in the content, so it is identical for every
+ad in a pod, and it is constant for the whole ad rather than drifting as the
+stitched clock advances.
+
+On a live stream `podIndex` is a large monotonic identifier (measured:
+`2965801`, `2965802`, …), so `podIndex === 0` never matches and **every live ad,
+pre-roll included, is reported as `mid`**. Live mid-rolls are correct; a live
+pre-roll is not distinguishable today.
+
+It is **never** taken from `adProgressData.adPosition` or
+`AdPodInfo.getAdPosition()` — both are the 1-based index of the ad *within its
+pod*, a different quantity.
 
 **`adPlayhead` comes from `adProgressData.currentTime`**, which the SDK reports
 ad-relative and starting at 0 (measured climbing `0 → 1835.8 → 4756.9 → 6882.2

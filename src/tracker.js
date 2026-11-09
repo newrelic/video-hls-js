@@ -59,9 +59,18 @@ export default class HLSTracker extends nrvideo.VideoTracker {
       : streamTime;
   }
 
-  // Same stream-vs-content distinction as getPlayhead: a stitched VOD's
-  // duration includes every inserted ad. Infinity (live) passes through, since
-  // Number.isFinite rejects the conversion.
+  /**
+   * Content duration, in ms. Same stream-vs-content distinction as
+   * getPlayhead(): a stitched VOD's duration includes every inserted ad.
+   *
+   * There is no Infinity case to exempt. hls.js reports a finite, growing DVR
+   * window for a live stream rather than Infinity (see isLive()), so the
+   * conversion runs on live too — measured on the DASH sibling, the DAI SDK
+   * returns a live stream time unchanged, so the number comes out the same.
+   * And the finiteness test in toContentTime() is applied to the CONVERTED
+   * value, so what it protects against is a conversion that cannot be made,
+   * not a non-finite duration.
+   */
   getDuration() {
     return this.toContentTime(this.tag.duration) * 1000;
   }

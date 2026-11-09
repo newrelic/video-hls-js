@@ -590,6 +590,39 @@ describe('HLSTracker', () => {
       expect(tracker.isLive()).toBeNull();
     });
 
+    // Pins what getDuration() actually does on live, which its comment used to
+    // describe wrongly: there is no Infinity to "pass through", because hls.js
+    // reports a finite DVR window, so the conversion runs on live too. The DAI
+    // SDK returns live stream times unchanged (measured on the DASH sibling),
+    // which is why the number comes out the same.
+    it('converts a live DVR window like any other duration', () => {
+      mockHlsInstance.currentLevel = 0;
+      mockHlsInstance.levels = [{ bitrate: 1, details: { live: true } }];
+      mockVideoElement.duration = 170.74;
+      tracker.adsTracker = {
+        isAd: () => true,
+        isAdPlaying: () => false,
+        // The SDK's live behaviour: the input, unchanged.
+        contentTimeForStreamTime: jest.fn((streamTime) => streamTime),
+      };
+
+      expect(tracker.getDuration()).toBe(170740);
+      expect(tracker.adsTracker.contentTimeForStreamTime).toHaveBeenCalledWith(170.74);
+    });
+
+    // The finiteness test is applied to the CONVERTED value, not the raw one:
+    // a conversion that cannot be made leaves the duration as hls.js reported it.
+    it('keeps the raw duration when the conversion is not a finite number', () => {
+      mockVideoElement.duration = 100;
+      tracker.adsTracker = {
+        isAd: () => true,
+        isAdPlaying: () => false,
+        contentTimeForStreamTime: () => NaN,
+      };
+
+      expect(tracker.getDuration()).toBe(100000);
+    });
+
     it('does not mistake a growing live duration for VOD', () => {
       mockHlsInstance.currentLevel = 0;
       mockHlsInstance.levels = [{ bitrate: 1, details: { live: true } }];

@@ -426,10 +426,18 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   /**
-   * Ad position from IMA's pod index, which is authoritative: podIndex 0 is a
-   * pre-roll, -1 a post-roll, anything else a mid-roll. Playback time cannot be
-   * used — under SSAI the ad itself advances the stitched stream's clock, so a
-   * time-based guess reclassifies a long pre-roll as a mid-roll partway in.
+   * Ad position from IMA's pod index: podIndex 0 is a pre-roll, -1 a post-roll,
+   * anything else a mid-roll. Playback time cannot be used — under SSAI the ad
+   * itself advances the stitched stream's clock, so a time-based guess
+   * reclassifies a long pre-roll as a mid-roll partway in.
+   *
+   * It is authoritative on VOD only. Measured on the DASH sibling, a live
+   * podIndex is a large monotonic identifier (2965801, 2965802, ...) rather
+   * than a 0-based break number, so `podIndex === 0` can never match on live
+   * and a live PRE-ROLL is reported as 'mid'. Accepted: mapping a large index
+   * to 'pre' instead would relabel every live mid-roll, which is the common
+   * case. AdPodInfo.getTimeOffset() is the untested candidate for telling them
+   * apart.
    */
   extractAdPosition(ad) {
     try {

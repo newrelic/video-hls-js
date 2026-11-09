@@ -32,6 +32,25 @@ describe('README.md — the non-fatal error filter upgrade note', () => {
   });
 });
 
+// Measured on the DASH sibling: on live, podIndex is a large monotonic
+// identifier (2965801, 2965802, ...), so `podIndex === 0` can never match and
+// a live pre-roll is reported as 'mid'. The README called this "unverified",
+// which reads as "might be fine" rather than "known, and here is the effect".
+describe('adPosition on live streams', () => {
+  it('states the measured live podIndex behaviour rather than calling it unverified', () => {
+    const readme = read('README.md');
+    expect(readme).not.toMatch(/adPosition[^.]*unverified/i);
+    expect(readme).toMatch(/monotonic/);
+    expect(readme).toMatch(/live pre-roll/i);
+  });
+
+  it('documents the consequence in the data model too', () => {
+    const datamodel = read('DATAMODEL.md');
+    expect(datamodel).toMatch(/podIndex/);
+    expect(datamodel).toMatch(/monotonic/);
+  });
+});
+
 describe('DATAMODEL.md — the DAI ad clock', () => {
   // adPlayhead comes from the SDK's adProgressData.currentTime, which tops out
   // just short of ad.getDuration() (measured 9538ms against 10000ms). A

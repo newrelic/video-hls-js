@@ -360,7 +360,7 @@ A complete runnable example is in [`samples/dai/index.html`](samples/dai/index.h
 #### Limitations
 
 - **Live pre-rolls may report `CONTENT_START` a moment early.** The pre-roll guard relies on DAI cue points, which the SDK provides for VOD only. On a live stream the guard falls back to the SDK's ad-break events, and those arrive just after playback has already entered the ad.
-- **Ad position on live streams is unverified.** `adPosition` comes from the IMA ad pod index. If the SDK reports an index for live pods that this tracker has not seen, a live pre-roll may be labelled `mid`.
+- **A live pre-roll is reported as `adPosition: 'mid'`.** `adPosition` comes from the IMA ad pod index, where `0` means pre-roll. On live, measurement shows the SDK uses the index as a large monotonic identifier instead (`2965801`, `2965802`, …), so it never equals `0` and every live ad — pre-roll included — maps to `mid`. Live mid-rolls, the common case, are correct. If you serve live pre-rolls and need them distinguished, raise an issue; `AdPodInfo.getTimeOffset()` is the untested candidate.
 
 ## Best Practices
 

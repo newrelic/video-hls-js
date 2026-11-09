@@ -701,6 +701,20 @@ describe('DaiTracker — ad playback events', () => {
     expect(tracker.getAdPosition()).toBe(expected);
   });
 
+  // Measured on the DASH sibling: on live, podIndex is a large monotonic
+  // identifier (2965801, 2965802, ...) rather than a 0-based break number, so
+  // `podIndex === 0` can never match and a live pre-roll is reported as 'mid'.
+  // Pinned because the alternative — mapping a big index to 'pre' — would
+  // relabel every live mid-roll.
+  it('reports a live pod index as mid, since live podIndex is not 0-based', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    startAd(tracker, sm, {
+      getAdPodInfo: () => ({ getPodIndex: () => 2965801, getTotalAds: () => 3 }),
+    });
+    expect(tracker.getAdPosition()).toBe('mid');
+  });
+
   it('reports the real ad count from the IMA ad pod, not 0', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
