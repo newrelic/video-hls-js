@@ -599,6 +599,12 @@ describe('HLSTracker', () => {
   });
 
   describe('ad-break-scoped content guard', () => {
+    // Deliberately WITHOUT isAdPlaying: this covers the getCurrentAdBreak()
+    // fallback branch, for an ads tracker that has no isAdPlaying() of its own.
+    // The real DaiTracker does have one, and isAdsTrackerActive() prefers it,
+    // so the real integration never reaches this branch — it is covered
+    // end-to-end in ads/dai-content-guard.test.js, which wires a real
+    // DaiTracker to a real HLSTracker through setAdsTracker().
     function makeFakeDaiTracker(currentAdBreak) {
       return {
         isAd: () => true,
