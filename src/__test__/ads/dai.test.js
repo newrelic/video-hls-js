@@ -91,9 +91,18 @@ function createMockStreamManager() {
   const listeners = {};
   return {
     addEventListener: jest.fn((type, cb) => { listeners[type] = cb; }),
-    removeEventListener: jest.fn((type) => { delete listeners[type]; }),
+    // Honours the handler argument, as the real StreamManager does: it matches
+    // on the function reference. An earlier version of this mock ignored it,
+    // which made the "removes the listeners" assertions pass even if
+    // unregisterListeners had passed entirely different functions — the exact
+    // bug those tests exist to catch now that the registered handlers are
+    // wrappers rather than the bound methods themselves.
+    removeEventListener: jest.fn((type, cb) => {
+      if (listeners[type] === cb) delete listeners[type];
+    }),
     contentTimeForStreamTime: jest.fn((streamTime) => streamTime),
     _emit(type, event) { if (listeners[type]) listeners[type](event); },
+    _listenerCount() { return Object.keys(listeners).length; },
   };
 }
 
@@ -152,6 +161,11 @@ describe('DaiTracker — construction & lifecycle', () => {
     tracker.unregisterListeners();
     const removed = sm.removeEventListener.mock.calls.map(([type]) => type).sort();
     expect(removed).toEqual([...HANDLED_EVENT_TYPES].sort());
+    // Asserting the TYPES is not enough: the real StreamManager matches on the
+    // function reference, so a wrapper registered and a bound method removed
+    // would leave every listener in place. The mock honours the reference, so
+    // this is what proves the right functions were handed back.
+    expect(sm._listenerCount()).toBe(0);
   });
 
   // LOADED only captures the stitched stream. It must NOT emit an ad request:
@@ -1226,5 +1240,85 @@ describe('DaiTracker — against video-core\'s real event gating', () => {
     const starts = reported.filter((e) => e === 'AD_START').length;
     const quartiles = reported.filter((e) => e.startsWith('AD_QUARTILE')).length;
     expect(quartiles).toBe(starts);
+  });
+});
+
+// A DaiTracker handler runs inside the IMA DAI SDK's OWN event dispatch, so an
+// exception escaping one does not merely lose an event: it reaches the SDK,
+// which aborts the stream request and emits an empty ERROR. Found in the
+// browser on the dash.js sibling — the live asset played nothing at all.
+//
+// The reachable path here: a consumer passes options.contentTracker but never
+// calls setAdsTracker(), then disposes the content tracker. This tracker's SDK
+// listeners survive, and the next DAI ERROR calls contentTracker.sendError(),
+// whose attribute collection dereferences the disposed tracker's player and
+// tag — a TypeError thrown straight into IMA's dispatch.
+describe('DaiTracker — never throws into the SDK dispatch', () => {
+  function startedEvent(adId = 'ad1') {
+    return {
+      getAd: () => ({
+        getAdId: () => adId,
+        getAdPodInfo: () => ({ getPodIndex: () => 0 }),
+      }),
+    };
+  }
+
+  it('swallows and logs an exception from any handler', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    tracker.sendDownload = () => {
+      throw new TypeError("Cannot read properties of null (reading 'url')");
+    };
+
+    expect(() => sm._emit(StreamEventType.STREAM_INITIALIZED, {})).not.toThrow();
+    expect(nrvideo.Log.error).toHaveBeenCalled();
+  });
+
+  // The real shape of the bug: a content tracker disposed out from under us.
+  it('swallows a throw from a disposed content tracker on a DAI error', () => {
+    const sm = createMockStreamManager();
+    const disposedContentTracker = {
+      getBitrate: () => null,
+      sendError: () => {
+        // What HLSTracker.getSrc() does once dispose() has nulled the player.
+        throw new TypeError("Cannot read properties of null (reading 'url')");
+      },
+    };
+    const tracker = new DaiTracker(sm, {
+      tag: createMockTag(),
+      contentTracker: disposedContentTracker,
+    });
+
+    expect(() =>
+      sm._emit(StreamEventType.ERROR, {
+        getStreamData: () => ({ errorMessage: 'stream failure' }),
+      })
+    ).not.toThrow();
+    expect(nrvideo.Log.error).toHaveBeenCalled();
+  });
+
+  it('keeps handling later events after one handler threw', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    tracker.sendAdBreakStart = () => {
+      throw new Error('attribute collection exploded');
+    };
+
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    // The break still opened: state is updated before the send.
+    expect(tracker.getCurrentAdBreak()).not.toBeNull();
+
+    tracker.sendAdQuartile = jest.fn();
+    sm._emit(StreamEventType.STARTED, startedEvent());
+    sm._emit(StreamEventType.FIRST_QUARTILE, {});
+    expect(tracker.sendAdQuartile).toHaveBeenCalledWith({ quartile: 1 });
+  });
+
+  it('still removes the wrapped listeners on unregisterListeners', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    tracker.unregisterListeners();
+    expect(sm.removeEventListener).toHaveBeenCalledTimes(HANDLED_EVENT_TYPES.length);
+    expect(sm._listenerCount()).toBe(0);
   });
 });
