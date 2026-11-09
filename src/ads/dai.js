@@ -544,6 +544,21 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     return this.currentAdData?.title ?? null;
   }
 
+  /**
+   * The ad's length in ms, from `ad.getDuration()` — NOT
+   * `adProgressData.duration`.
+   *
+   * Both are available: measured 10 and 9.976 for the same ad. This one wins
+   * because it is known from AD_START, before any progress tick, and stays
+   * constant for the whole ad. A duration that changes mid-ad invites distrust
+   * of the whole dataset.
+   *
+   * Accepted consequence: adPlayhead comes from the SDK's finer-grained clock
+   * and tops out near 9.976s while this reports 10000ms, so
+   * adPlayhead / adDuration caps at about 99.76% and a condition written
+   * `adPlayhead >= adDuration` never fires. Measure ad completion from AD_END
+   * or the third quartile (documented in DATAMODEL.md).
+   */
   getDuration() {
     const duration = this.currentAdData?.duration;
     return duration === undefined || duration === null ? null : duration * 1000;
