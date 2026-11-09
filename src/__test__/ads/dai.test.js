@@ -337,6 +337,48 @@ describe('DaiTracker — construction & lifecycle', () => {
     expect(contentTracker.sendError).toHaveBeenCalled();
   });
 
+  // video-core's getAttributes() FILLS AND RETURNS the object it is handed, so
+  // handing ONE payload to the ad tracker and then the content tracker
+  // publishes a CONTENT_ERROR carrying adId, adPartner, adPosition and
+  // adPlayhead. The rule is already applied to adBreakData (adBreakAttributes
+  // builds fresh); it was missed on a payload shared across two trackers.
+  //
+  // The test above cannot catch this: its mocks are plain jest.fn()s that do
+  // not mutate, and Jest records arguments BY REFERENCE. This one replays the
+  // mutation and snapshots what each tracker actually received.
+  it('does not leak ad attributes into the content error event', () => {
+    const sm = createMockStreamManager();
+    let contentReceived = null;
+    const contentTracker = {
+      getBitrate: () => null,
+      sendError: jest.fn((att) => {
+        contentReceived = { ...att };
+        att.isAd = false;
+        att.contentId = 'content-1';
+        return att;
+      }),
+    };
+    const tracker = new DaiTracker(sm, { tag: createMockTag(), contentTracker });
+    tracker.sendError = jest.fn((att) => {
+      att.isAd = true;
+      att.adId = 'ad-1';
+      att.adPartner = 'google-dai';
+      att.adPosition = 'pre';
+      att.adPlayhead = 3200;
+      return att;
+    });
+
+    sm._emit(StreamEventType.AD_BREAK_STARTED, {});
+    sm._emit(StreamEventType.ERROR, {
+      getStreamData: () => ({ errorMessage: 'mid-break failure' }),
+    });
+
+    expect(contentReceived).toEqual({ errorMessage: 'mid-break failure' });
+    ['adId', 'adPartner', 'adPosition', 'adPlayhead'].forEach((key) => {
+      expect(contentReceived).not.toHaveProperty(key);
+    });
+  });
+
   it('ERROR still reports on itself when no content tracker is wired', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
