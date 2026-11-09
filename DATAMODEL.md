@@ -229,7 +229,7 @@ completion from `AD_END` or the third quartile instead.
 | AD_ERROR      | Ad video error.      |
 | ERROR         | An error happened.   |
 | CRASH         | App crash happened.  |
-| CONTENT_ERROR | Content video error. Only fatal player errors are reported: hls.js raises recoverable conditions it then handles itself (`bufferStalledError`, `aborted`, `bufferAppendNoProgress`) on the same event, and counting those would charge `numberOfErrors`, `hadPlaybackError` and `hadStartupError` to sessions that played fine. |
+| CONTENT_ERROR | Content video error. Only fatal player errors are reported: hls.js raises recoverable conditions it then handles itself (`bufferStalledError`, `aborted`, `bufferAppendNoProgress`) on the same event, and counting those would charge `numberOfErrors`, `hadPlaybackError` and `hadStartupError` to sessions that played fine. This changes the error data of every consumer on upgrade — see [Upgrade notes](README.md#upgrade-notes). |
 
 ### VideoCustomAction
 

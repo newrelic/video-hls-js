@@ -21,6 +21,7 @@ The New Relic HLS.js Tracker provides comprehensive video analytics for applicat
 
 ## Table of Contents
 
+- [Upgrade notes](#upgrade-notes)
 - [Installation](#installation)
   - [Option 1: NPM/Yarn](#option-1-install-via-npmyarn)
   - [Option 2: Direct Script Include](#option-2-direct-script-include-without-npm)
@@ -35,6 +36,35 @@ The New Relic HLS.js Tracker provides comprehensive video analytics for applicat
 - [Support](#support)
 - [Contribute](#contribute)
 - [License](#license)
+
+## Upgrade notes
+
+> ⚠️ **Non-fatal hls.js errors are no longer reported.** This applies to **every**
+> consumer of this release, whether or not you track ads, and it changes your
+> error data.
+>
+> hls.js raises recoverable conditions it then handles itself on the same
+> `Hls.Events.ERROR` event as genuine failures, distinguished only by `fatal`.
+> Reporting them charged `numberOfErrors` and `hadPlaybackError` — and, for
+> anything arriving before `CONTENT_START`, `hadStartupError` — to sessions that
+> played perfectly well: one live capture reported `hadStartupError` on a 245ms
+> startup, and an ordinary seek produced two `aborted` errors.
+>
+> The tracker now drops any error whose `data.fatal` is explicitly `false`. An
+> error that does not state whether it is fatal is still reported.
+>
+> **What this means for you when you upgrade:**
+>
+> - `numberOfErrors` and the error-event rate for the same traffic will drop, so
+>   alert conditions and dashboards built on `VideoErrorAction` counts,
+>   `numberOfErrors` or `hadPlaybackError` need their thresholds revisited.
+> - Non-fatal errors that carried useful signal are no longer sent. The clearest
+>   case is `fragLoadError` retries: hls.js reports those non-fatally while it
+>   retries the segment, and they were a usable CDN health signal. If you
+>   depended on them, raise an issue — a configurable severity threshold is the
+>   natural follow-up.
+> - Fatal errors are unaffected, as is `hadStartupError` for real startup
+>   failures.
 
 ## Installation
 
