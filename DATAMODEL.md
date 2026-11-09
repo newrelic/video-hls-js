@@ -125,7 +125,7 @@ An Attribute is a piece of data associated with an event. Attributes provide add
 | adRenditionHeight        | Rendition actual Height (before re-scaling).                                                                                                       |
 | adRenditionWidth         | Rendition actual Width (before re-scaling).                                                                                                        |
 | adDuration               | Duration of the video, in ms.                                                                                                                      |
-| adPlayhead               | Playhead of the ad, in ms, measured from the start of the ad — not the stitched stream position. Bounded by `adDuration`.                           |
+| adPlayhead               | Playhead of the ad, in ms, measured from the start of the ad — not the stitched stream position. Under Google IMA DAI this comes from the SDK's `adProgressData.currentTime`. See the DAI note below. |
 | adLanguage               | Language of the ad video. We recommend using locale notation, e.g., en_US.                                                                         |
 | adSrc                    | URL of the resource being played.                                                                                                                  |
 | adCdn                    | The CDN serving the content.                                                                                                                       |
@@ -147,6 +147,28 @@ An Attribute is a piece of data associated with an event. Attributes provide add
 | instrumentation.provider | Player/agent name.                                                                                                                                 |
 | instrumentation.name     | Name of the instrumentation collecting the data.                                                                                                   |
 | instrumentation.version  | Agent’s version.                                                                                                                                   |
+
+#### Google IMA DAI: where these values come from
+
+The HLS tracker reports DAI ads through `DaiTracker`. Two attributes have a
+source that is easy to guess wrong when reading Google's SDK documentation, so
+they are stated explicitly.
+
+**`adPlayhead` comes from `adProgressData.currentTime`**, which the SDK reports
+ad-relative and starting at 0 (measured climbing `0 → 1835.8 → 4756.9 → 6882.2
+→ 9538.4` ms within one ad). It is **not** derived from the stitched stream
+clock: under SSAI that clock keeps running through the ad, so a 10s mid-roll
+would otherwise report a playhead in the hundreds of seconds. `adPlayhead` is
+`0` for an ad that has started but has not yet produced a progress tick.
+
+**`adDuration` comes from `ad.getDuration()`**, which is known from the ad's
+start and stays constant for the whole ad.
+
+⚠️ **The two never quite meet.** `adPlayhead` tops out just short of
+`adDuration` — measured, `currentTime` reached 9538ms against an
+`ad.getDuration()` of 10000ms, so `adPlayhead / adDuration` caps near **99.76%**
+and a condition written `adPlayhead >= adDuration` **never fires**. Measure ad
+completion from `AD_END` or the third quartile instead.
 
 #### List of possible Video Ad Actions
 

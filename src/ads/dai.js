@@ -14,7 +14,10 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     this.streamManager = streamManager;
     this.contentTracker = options?.contentTracker || null;
     this.currentAdData = null;
-    this.adStartStreamTime = null;
+    // The ad clock, cached from AD_PROGRESS — the only event that carries it.
+    // There is deliberately NO adStartStreamTime: adPlayhead comes straight
+    // from the SDK, so there is no offset to capture or rebase.
+    this.adProgressData = null;
     this.adBreakData = null;
     this.adBreakFromPeriod = false;
     this.streamData = null;
@@ -22,13 +25,12 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   /**
-   * Drops the in-flight ad. The stream-time offset has to go with it, or
-   * getPlayhead() keeps subtracting a finished ad's start and under-reports
-   * content position for the rest of the session.
+   * Drops the in-flight ad. The cached progress has to go with it, or the next
+   * ad reports the previous one's playhead until its first progress tick lands.
    */
   clearCurrentAd() {
     this.currentAdData = null;
-    this.adStartStreamTime = null;
+    this.adProgressData = null;
   }
 
   registerListeners() {
@@ -86,6 +88,11 @@ export default class DaiTracker extends nrvideo.VideoTracker {
       [StreamEvent.RESUMED]: this.onAdResumed.bind(this),
       [StreamEvent.CLICK]: this.onAdClicked.bind(this),
       [StreamEvent.VIDEO_CLICKED]: this.onAdClicked.bind(this),
+
+      // Cache only — see onAdProgress. Registered because it is the sole
+      // carrier of StreamData.adProgressData, which is where adPlayhead comes
+      // from.
+      [StreamEvent.AD_PROGRESS]: this.onAdProgress.bind(this),
 
       [StreamEvent.CUEPOINTS_CHANGED]: this.onCuePointsChanged.bind(this),
     };
@@ -230,7 +237,9 @@ export default class DaiTracker extends nrvideo.VideoTracker {
 
   onAdStarted(event) {
     this.currentAdData = this.extractAdData(event);
-    this.adStartStreamTime = (this.tag?.currentTime ?? 0) * 1000;
+    // No stream-time capture here. adPlayhead comes from the SDK's own
+    // adProgressData, so there is no offset to take.
+
     // AD_BREAK_STARTED carries no break information at all, so backfill it from
     // the first ad's pod info now that one exists.
     if (this.adBreakData) {
@@ -299,6 +308,22 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     // so a null would log that warning on every click.
     const url = this.getClickThroughUrl();
     this.sendAdClick(url ? { url } : {});
+  }
+
+  /**
+   * Cache only — this handler must contain no `send*` of any kind.
+   *
+   * AD_PROGRESS fires ~4 times a second, so emitting it would flood NRDB. But
+   * it is the only event carrying StreamData.adProgressData, which is where
+   * adPlayhead comes from, so it has to be registered and stored.
+   */
+  onAdProgress(event) {
+    try {
+      const data = event?.getStreamData?.()?.adProgressData;
+      if (data) this.adProgressData = data;
+    } catch (error) {
+      nrvideo.Log.warn('DaiTracker: Failed to read ad progress', error);
+    }
   }
 
   onCuePointsChanged(event) {
@@ -576,8 +601,34 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   /**
-   * Stream time, in ms. Under SSAI the stitched stream's own clock IS the
-   * stream timeline, so the media element is the source of truth.
+   * adPlayhead, in ms: the SDK's own ad-relative clock while an ad is on
+   * screen, and the stitched stream clock otherwise.
+   *
+   * `adProgressData.currentTime` is ad-relative and starts at 0 — measured
+   * climbing 0 -> 1835.8 -> 4756.9 -> 6882.2 -> 9538.4 ms within one ad — which
+   * is exactly what adPlayhead means. Nothing is subtracted and nothing is
+   * rebased: an offset captured at AD_START was the stream clock at the SDK's
+   * NOTIFICATION rather than at the ad's first frame, so it under-reported by
+   * the notification latency and clamped negatives to 0, and a seek or snapback
+   * into a mid-roll rebased it from the landing point.
+   *
+   * Returns 0 for an ad in flight whose first progress tick has not arrived,
+   * which is the correct value at that moment and, crucially, not the stitched
+   * stream position.
+   */
+  getPlayhead() {
+    if (this.hasAdInFlight()) {
+      const currentTime = this.adProgressData?.currentTime;
+      return typeof currentTime === 'number' ? currentTime * 1000 : 0;
+    }
+    return this.getStreamTimeMs();
+  }
+
+  /**
+   * The stitched stream's own clock, in ms — the timeline cue points and the
+   * SDK's time conversions are expressed in. Anything comparing against DAI
+   * stream positions wants this, NOT getPlayhead(), which is ad-relative while
+   * an ad is on screen.
    *
    * There is deliberately no StreamManager call here: the live SDK exposes no
    * getStreamTime(). Its time API is contentTimeForStreamTime() /
@@ -587,18 +638,6 @@ export default class DaiTracker extends nrvideo.VideoTracker {
    *
    * tag is null on a disposed tracker, and this runs from the content tracker's
    * event handlers, so it must not throw.
-   */
-  getPlayhead() {
-    const streamTime = this.getStreamTimeMs();
-    if (this.adStartStreamTime == null) return streamTime;
-    return Math.max(0, streamTime - this.adStartStreamTime);
-  }
-
-  /**
-   * The stitched stream's own clock, in ms — the timeline cue points and the
-   * SDK's time conversions are expressed in. Anything comparing against DAI
-   * stream positions wants this, NOT getPlayhead(), which is ad-relative while
-   * an ad is on screen.
    */
   getStreamTimeMs() {
     return (this.tag?.currentTime ?? 0) * 1000;

@@ -48,6 +48,7 @@ const StreamEventType = {
   THIRD_QUARTILE: 'thirdQuartile', COMPLETE: 'complete', SKIPPED: 'skipped',
   PAUSED: 'paused', RESUMED: 'resumed', CLICK: 'click', VIDEO_CLICKED: 'videoClicked',
   CUEPOINTS_CHANGED: 'cuepointsChanged', TIMED_METADATA: 'timedMetadata',
+  AD_PROGRESS: 'adProgress',
 };
 
 // Every StreamEvent type DaiTracker subscribes to. TIMED_METADATA is
@@ -71,7 +72,15 @@ const HANDLED_EVENT_TYPES = [
   StreamEventType.CLICK,
   StreamEventType.VIDEO_CLICKED,
   StreamEventType.CUEPOINTS_CHANGED,
+  // Cache only — the sole carrier of StreamData.adProgressData, which is where
+  // adPlayhead comes from. See 'AD_PROGRESS is a cache, never an event'.
+  StreamEventType.AD_PROGRESS,
 ];
+
+// Shape of the AD_PROGRESS payload, as measured on the live SDK.
+function progressEvent(adProgressData) {
+  return { getStreamData: () => ({ adProgressData }) };
+}
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -906,17 +915,52 @@ describe('DaiTracker — ad playback events', () => {
   // adDuration. Under SSAI the media element's clock is the stitched stream, so
   // reporting it raw made a 10s mid-roll report an adPlayhead of 325 seconds
   // (observed live: AD_START 315142ms, AD_END 325236ms on a 10000ms ad).
-  it('getPlayhead() reports progress within the ad, not the stitched stream position', () => {
+  //
+  // It comes from the SDK's own ad clock, NOT from a stream-time offset taken
+  // at AD_START. The offset was taken at the SDK's notification rather than at
+  // the ad's first frame, so it under-reported by the notification latency and
+  // clamped the difference at 0; and a seek or snapback into a mid-roll rebased
+  // it from the landing point.
+  it('getPlayhead() reports the SDK ad clock, not the stitched stream position', () => {
     const sm = createMockStreamManager();
     const tag = createMockTag();
     const tracker = new DaiTracker(sm, { tag });
 
     tag.currentTime = 315.142; // mid-roll begins 5m15s into the stitched stream
     startAd(tracker, sm);
-    expect(tracker.getPlayhead()).toBe(0);
+    sm._emit(StreamEventType.AD_PROGRESS, progressEvent({
+      currentTime: 4.7569, duration: 9.976, totalAds: 3,
+    }));
 
-    tag.currentTime = 320.142; // 5s into the ad
-    expect(tracker.getPlayhead()).toBe(5000);
+    expect(tracker.getPlayhead()).toBe(4756.9);
+  });
+
+  // The stitched clock keeps running, but it must not reach adPlayhead: a seek
+  // or snapback into a mid-roll would otherwise rebase the ad from the landing
+  // point.
+  it('getPlayhead() ignores the stitched clock while an ad is in flight', () => {
+    const sm = createMockStreamManager();
+    const tag = createMockTag();
+    const tracker = new DaiTracker(sm, { tag });
+
+    tag.currentTime = 315.142;
+    startAd(tracker, sm);
+    sm._emit(StreamEventType.AD_PROGRESS, progressEvent({ currentTime: 1.8358 }));
+    tag.currentTime = 320.142; // the stream advanced 5s
+
+    expect(tracker.getPlayhead()).toBeCloseTo(1835.8, 6);
+  });
+
+  it('getPlayhead() reports 0 for an ad in flight before the first progress tick', () => {
+    const sm = createMockStreamManager();
+    const tag = createMockTag();
+    const tracker = new DaiTracker(sm, { tag });
+
+    tag.currentTime = 315.142;
+    startAd(tracker, sm);
+
+    // 0 is the correct value at that moment, and crucially NOT 315142.
+    expect(tracker.getPlayhead()).toBe(0);
   });
 
   it('getPlayhead() goes back to stream time once the ad ends', () => {
@@ -926,27 +970,29 @@ describe('DaiTracker — ad playback events', () => {
 
     tag.currentTime = 100;
     startAd(tracker, sm);
+    sm._emit(StreamEventType.AD_PROGRESS, progressEvent({ currentTime: 9.5 }));
     tag.currentTime = 110;
     sm._emit(StreamEventType.COMPLETE, {});
 
     expect(tracker.getPlayhead()).toBe(110000);
   });
 
-  // Each ad in a pod rebases, so the second ad does not inherit the first's
-  // offset and report a playhead one ad-length too high.
-  it('rebases the playhead for every ad in a pod', () => {
+  // The cached progress has to go with the ad it belongs to, or the next ad
+  // reports the previous one's playhead until its own first tick lands.
+  it("does not leak the previous ad's playhead into the next ad in a pod", () => {
     const sm = createMockStreamManager();
     const tag = createMockTag();
     const tracker = new DaiTracker(sm, { tag });
 
     tag.currentTime = 100;
     startAd(tracker, sm, { getAdId: () => 'ad1' });
-    tag.currentTime = 110;
+    sm._emit(StreamEventType.AD_PROGRESS, progressEvent({ currentTime: 9.5 }));
+    expect(tracker.getPlayhead()).toBe(9500);
     sm._emit(StreamEventType.COMPLETE, {});
 
     sm._emit(StreamEventType.STARTED, { getAd: () => makeAd({ getAdId: () => 'ad2' }) });
     tag.currentTime = 113;
-    expect(tracker.getPlayhead()).toBe(3000);
+    expect(tracker.getPlayhead()).toBe(0);
   });
 
   // isAdPlaying() compares the cue point windows — which are STREAM times —
@@ -965,6 +1011,89 @@ describe('DaiTracker — ad playback events', () => {
 
     expect(tracker.getCurrentAdBreak()).toBeNull();
     expect(tracker.isAdPlaying()).toBe(true);
+  });
+});
+
+// AD_PROGRESS is the only event carrying StreamData.adProgressData, whose
+// currentTime is already ad-relative and starts at 0 (measured climbing
+// 0 -> 1835.8 -> 4756.9 -> 6882.2 -> 9538.4 ms within one 10s ad). That is
+// exactly what adPlayhead means, so it has to be subscribed — but it fires
+// ~4 times a second, so emitting it would flood NRDB. It is a cache and
+// nothing else.
+describe('DaiTracker — AD_PROGRESS is a cache, never an event', () => {
+  function makeAd(overrides = {}) {
+    return {
+      getAdId: () => 'ad1',
+      getAdPodInfo: () => ({ getPodIndex: () => 0 }),
+      ...overrides,
+    };
+  }
+
+  it('registers AD_PROGRESS', () => {
+    const sm = createMockStreamManager();
+    new DaiTracker(sm, { tag: createMockTag() });
+    const subscribed = sm.addEventListener.mock.calls.map(([type]) => type);
+    expect(subscribed).toContain(StreamEventType.AD_PROGRESS);
+  });
+
+  it('caches adProgressData on AD_PROGRESS without sending anything', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    const sends = [
+      'sendRequest', 'sendStart', 'sendEnd', 'sendPause', 'sendResume',
+      'sendAdQuartile', 'sendAdClick', 'sendAdBreakStart', 'sendAdBreakEnd',
+      'sendError', 'sendDownload',
+    ];
+    sends.forEach((m) => jest.spyOn(tracker, m));
+
+    const data = {
+      adBreakDuration: 29.928, adPeriodDuration: 30.03, adPosition: 1,
+      currentTime: 0.267, duration: 9.976, totalAds: 3,
+    };
+    sm._emit(StreamEventType.AD_PROGRESS, progressEvent(data));
+
+    expect(tracker.adProgressData).toEqual(data);
+    sends.forEach((m) => expect(tracker[m]).not.toHaveBeenCalled());
+  });
+
+  it('survives an AD_PROGRESS event carrying no stream data', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    expect(() => sm._emit(StreamEventType.AD_PROGRESS, {})).not.toThrow();
+    expect(tracker.adProgressData).toBeNull();
+  });
+
+  it('drops the cached progress when the ad ends', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+
+    sm._emit(StreamEventType.STARTED, { getAd: () => makeAd() });
+    sm._emit(StreamEventType.AD_PROGRESS, progressEvent({ currentTime: 5, duration: 10 }));
+    expect(tracker.adProgressData).not.toBeNull();
+
+    sm._emit(StreamEventType.COMPLETE, {});
+    expect(tracker.adProgressData).toBeNull();
+  });
+
+  it('drops the cached progress when a new stream initializes', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+
+    sm._emit(StreamEventType.STARTED, { getAd: () => makeAd() });
+    sm._emit(StreamEventType.AD_PROGRESS, progressEvent({ currentTime: 5 }));
+    sm._emit(StreamEventType.STREAM_INITIALIZED, {});
+
+    expect(tracker.adProgressData).toBeNull();
+  });
+
+  // There is no stream-time offset any more. A leftover adStartStreamTime would
+  // mean getPlayhead() still subtracted a finished ad's start from content
+  // position for the rest of the session.
+  it('keeps no stream-time offset of its own', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    sm._emit(StreamEventType.STARTED, { getAd: () => makeAd() });
+    expect(tracker.adStartStreamTime).toBeUndefined();
   });
 });
 
