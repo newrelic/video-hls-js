@@ -22,6 +22,24 @@ export default class DaiTracker extends nrvideo.VideoTracker {
     this.adBreakFromPeriod = false;
     this.streamData = null;
     this.cuePoints = [];
+
+    // video-core's base does `tag = tag || player`, so without options.tag the
+    // "video element" silently becomes the StreamManager. getStreamTimeMs()
+    // then reads `undefined?.currentTime` and returns 0 forever, which freezes
+    // the stitched clock: the cue-point arm of isAdPlaying() can never match,
+    // so CONTENT_START is not deferred past a VOD pre-roll — and nothing
+    // reports a problem.
+    if (this.tag === streamManager) {
+      const inherited = this.contentTracker?.tag;
+      if (inherited && typeof inherited.currentTime === 'number') {
+        this.tag = inherited;
+      } else {
+        this.tag = null;
+        nrvideo.Log.warn(
+          'DaiTracker: no media element available — pass options.tag (or a contentTracker that has one), or the ad playhead and cue point detection cannot work'
+        );
+      }
+    }
   }
 
   /**
@@ -660,7 +678,9 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   isMuted() {
-    return this.tag.muted;
+    // tag is null on a disposed tracker, and this is reached from video-core's
+    // attribute collection inside the SDK's own dispatch, so it must not throw.
+    return this.tag?.muted;
   }
 
   // The stitched stream is decoded by the same hls.js instance during ads, so

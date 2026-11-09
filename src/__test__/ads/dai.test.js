@@ -1205,6 +1205,17 @@ describe('DaiTracker — cue points, metadata, getters', () => {
     expect(tracker.isMuted()).toBe(true);
   });
 
+  // Same post-dispose hardening as everything beside it: dispose() nulls tag,
+  // the parent keeps calling in after setAdsTracker(null), and this is reached
+  // from video-core's attribute collection inside the SDK's own dispatch.
+  it('isMuted() does not throw after being disposed', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    tracker.dispose();
+    expect(() => tracker.isMuted()).not.toThrow();
+    expect(tracker.isMuted()).toBeUndefined();
+  });
+
   it('getBitrate()/getRenditionBitrate() delegate to options.contentTracker when provided', () => {
     const sm = createMockStreamManager();
     const contentTracker = { getBitrate: jest.fn(() => 512000) };
@@ -1449,5 +1460,58 @@ describe('DaiTracker — never throws into the SDK dispatch', () => {
     tracker.unregisterListeners();
     expect(sm.removeEventListener).toHaveBeenCalledTimes(HANDLED_EVENT_TYPES.length);
     expect(sm._listenerCount()).toBe(0);
+  });
+});
+
+// video-core's base does `tag = tag || player` (verified in 5.1.1), so a
+// DaiTracker built without options.tag silently takes the StreamManager as its
+// "video element". getStreamTimeMs() then reads undefined?.currentTime and
+// returns 0 forever, which freezes the stitched clock: the cue-point arm of
+// isAdPlaying() can never match, so CONTENT_START is not deferred past a VOD
+// pre-roll — and nothing reports a problem.
+describe('DaiTracker — the tag must be a media element', () => {
+  it("falls back to the content tracker's tag when options.tag is omitted", () => {
+    const video = createMockTag(7);
+    const contentTracker = { tag: video, getBitrate: () => null, isLive: () => false };
+    const sm = createMockStreamManager();
+
+    const tracker = new DaiTracker(sm, { contentTracker });
+
+    expect(tracker.tag).toBe(video);
+    expect(tracker.getStreamTimeMs()).toBe(7000);
+  });
+
+  it('warns when no usable media element can be resolved', () => {
+    const sm = createMockStreamManager();
+
+    const tracker = new DaiTracker(sm, {});
+
+    expect(nrvideo.Log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('media element')
+    );
+    // Still inert rather than broken.
+    expect(tracker.getStreamTimeMs()).toBe(0);
+    expect(() => tracker.isAdPlaying()).not.toThrow();
+  });
+
+  it('does not take a content tracker tag that has no clock of its own', () => {
+    const sm = createMockStreamManager();
+
+    const tracker = new DaiTracker(sm, {
+      contentTracker: { tag: { muted: false }, getBitrate: () => null },
+    });
+
+    expect(tracker.tag).toBeNull();
+    expect(nrvideo.Log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('media element')
+    );
+  });
+
+  it('does not warn when options.tag was supplied', () => {
+    const sm = createMockStreamManager();
+    new DaiTracker(sm, { tag: createMockTag() });
+    expect(nrvideo.Log.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('media element')
+    );
   });
 });
