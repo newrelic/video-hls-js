@@ -24,7 +24,7 @@ permissions:
 jobs:
   upload:
     name: Upload to S3
-    environment: s3-deploy
+    environment: s3-upload
     uses: newrelic/video-core-js/.github/workflows/s3-upload.yml@d8d79f546b38d0aaf372879f5ccd0a0d97afc129 # master
     with:
       release-tag: ${{ inputs.release-tag }}
