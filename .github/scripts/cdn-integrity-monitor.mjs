@@ -15,7 +15,6 @@
  *
  * Environment variables:
  *   GITHUB_TOKEN  — optional, increases GitHub API rate limit
- *   CDN_BASE_URL  — public base URL of the S3 bucket (e.g. https://nr-downloads.newrelic.com)
  */
 import { createHash } from 'node:crypto'
 import { readFile, appendFile } from 'node:fs/promises'
@@ -137,13 +136,7 @@ if (!releases.length) {
   process.exit(0)
 }
 
-const cdnBaseUrl = process.env.CDN_BASE_URL?.replace(/\/$/, '')
-if (!cdnBaseUrl) {
-  console.error('CDN_BASE_URL environment variable is required')
-  process.exit(1)
-}
-
-const S3_BASE = `${cdnBaseUrl}/media-agents/browser/hls-js`
+const S3_BASE = 'https://download.newrelic.com/media-agents/browser/hls-js'
 const summary = []
 const findings = []
 
