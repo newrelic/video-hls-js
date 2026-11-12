@@ -25,7 +25,7 @@ jobs:
   upload:
     name: Upload to S3
     environment: s3-publish
-    uses: newrelic/video-core-js/.github/workflows/s3-upload.yml@d8d79f546b38d0aaf372879f5ccd0a0d97afc129 # master
+    uses: newrelic/video-core-js/.github/workflows/s3-upload.yml@45ea8078cd9fcb5ad301c0266bfe8d775cdbd42d # master
     with:
       release-tag: ${{ inputs.release-tag }}
       s3-path: 'media-agents/browser/hls-js'
