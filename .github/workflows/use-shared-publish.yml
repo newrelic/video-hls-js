@@ -10,7 +10,8 @@ permissions:
 
 jobs:
   build-and-publish:
-    uses: newrelic/video-core-js/.github/workflows/npm-publish.yml@d8d79f546b38d0aaf372879f5ccd0a0d97afc129 # master
+    environment: npm-release
+    uses: newrelic/video-core-js/.github/workflows/npm-publish.yml@45ea8078cd9fcb5ad301c0266bfe8d775cdbd42d # master
     with:
       s3-path: 'media-agents/browser/hls-js'
       file-to-upload: 'dist/umd/newrelic-video-hls.min.js'
