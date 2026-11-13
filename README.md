@@ -13,18 +13,21 @@ The New Relic HLS.js Tracker provides comprehensive video analytics for applicat
 - 📊 **Comprehensive Bitrate Tracking** - Four distinct bitrate metrics for complete quality analysis
 - 🔄 **Adaptive Bitrate Monitoring** - Tracks rendition changes with old and new bitrate values
 - 📈 **QoE Metrics** - Quality of Experience tracking for startup time, buffering, and playback quality
-- 🎨 **Event Segregation** - Organized event types: `VideoAction`, `VideoErrorAction`, `VideoCustomAction`
+- 🎨 **Event Segregation** - Organized event types: `VideoAction`, `VideoAdAction`, `VideoErrorAction`, `VideoCustomAction`
+- 📺 **Google DAI Ads** - Server-side ad insertion tracking: ad breaks, quartiles, clicks and ad errors
 - 🚀 **Easy Integration** - NPM package or direct script include
 - ⚡ **Real-Time Performance** - Network throughput and per-segment download bitrate monitoring
 - 🎬 **HLS Specific** - Optimized for adaptive streaming using Media Source Extensions (MSE)
 
 ## Table of Contents
 
+- [Upgrade notes](#upgrade-notes)
 - [Installation](#installation)
   - [Option 1: NPM/Yarn](#option-1-install-via-npmyarn)
   - [Option 2: Direct Script Include](#option-2-direct-script-include-without-npm)
 - [Prerequisites](#prerequisites)
 - [Usage](#usage)
+  - [Google DAI Ad Tracking](#google-dai-ad-tracking)
 - [Best Practices](#best-practices)
 - [Configuration Options](#configuration-options)
 - [API Reference](#api-reference)
@@ -33,6 +36,35 @@ The New Relic HLS.js Tracker provides comprehensive video analytics for applicat
 - [Support](#support)
 - [Contribute](#contribute)
 - [License](#license)
+
+## Upgrade notes
+
+> ⚠️ **Non-fatal hls.js errors are no longer reported.** This applies to **every**
+> consumer of this release, whether or not you track ads, and it changes your
+> error data.
+>
+> hls.js raises recoverable conditions it then handles itself on the same
+> `Hls.Events.ERROR` event as genuine failures, distinguished only by `fatal`.
+> Reporting them charged `numberOfErrors` and `hadPlaybackError` — and, for
+> anything arriving before `CONTENT_START`, `hadStartupError` — to sessions that
+> played perfectly well: one live capture reported `hadStartupError` on a 245ms
+> startup, and an ordinary seek produced two `aborted` errors.
+>
+> The tracker now drops any error whose `data.fatal` is explicitly `false`. An
+> error that does not state whether it is fatal is still reported.
+>
+> **What this means for you when you upgrade:**
+>
+> - `numberOfErrors` and the error-event rate for the same traffic will drop, so
+>   alert conditions and dashboards built on `VideoErrorAction` counts,
+>   `numberOfErrors` or `hadPlaybackError` need their thresholds revisited.
+> - Non-fatal errors that carried useful signal are no longer sent. The clearest
+>   case is `fragLoadError` retries: hls.js reports those non-fatally while it
+>   retries the segment, and they were a usable CDN health signal. If you
+>   depended on them, raise an issue — a configurable severity threshold is the
+>   natural follow-up.
+> - Fatal errors are unaffected, as is `hadStartupError` for real startup
+>   failures.
 
 ## Installation
 
@@ -235,6 +267,100 @@ All sub-fields optional — missing values fall back to the defaults baked into 
 | `osBuild` | `getBuildIdSync()` — OS image build | `"1"` |
 | `appBuild` | `getBuildNumber()` — app build number | `"1"` |
 | `architecture` | `'aarch64'` | `"aarch64"` |
+
+### Google DAI Ad Tracking
+
+For streams with Google IMA DAI (Dynamic Ad Insertion) ads stitched in server-side, `DaiTracker` reports ad breaks, individual ads, quartiles, clicks and ad errors as `VideoAdAction` events on the same New Relic view as your content.
+
+**Prerequisite:** load the IMA DAI SDK before constructing the tracker — `DaiTracker` reads `google.ima.dai.api.*` off the global scope and is a no-op (with a warning) if the SDK is missing.
+
+```html
+<script src="https://imasdk.googleapis.com/js/sdkloader/ima3_dai.js"></script>
+```
+
+Because hls.js has no ads plugin layer, the wiring is explicit: your application creates the `StreamManager` (as it already must, to obtain the stitched manifest URL) and hands it to `DaiTracker`.
+
+```javascript
+import HLSTracker, { DaiTracker } from '@newrelic/video-hls';
+
+const video = document.getElementById('video');
+const hls = new Hls();
+
+// Attach the media element BEFORE constructing the tracker — the tracker
+// resolves its video tag from hls.media, which is null until attachMedia().
+hls.attachMedia(video);
+const tracker = new HLSTracker(hls, options);
+
+const streamManager = new google.ima.dai.api.StreamManager(video);
+
+const daiTracker = new DaiTracker(streamManager, {
+  tag: video,
+  contentTracker: tracker,
+});
+tracker.setAdsTracker(daiTracker);
+
+// DAI hands back the stitched manifest; hls.js plays it as one continuous stream.
+streamManager.addEventListener(
+  google.ima.dai.api.StreamEvent.Type.LOADED,
+  (e) => hls.loadSource(e.getStreamData().url)
+);
+
+const request = new google.ima.dai.api.VODStreamRequest();
+request.contentSourceId = 'YOUR_CMS_ID';
+request.videoId = 'YOUR_VIDEO_ID';
+streamManager.requestStream(request);
+```
+
+**Live streams additionally require you to forward ID3 timed metadata.** Use a `LiveStreamRequest` with an `assetKey`, and hand the stream's in-band ID3 samples to the SDK. A live break is signalled inside the media segments rather than in the cue point list, so without this the SDK never learns a break started and **no ad events fire at all**:
+
+```javascript
+hls.on(Hls.Events.FRAG_PARSING_METADATA, (event, data) => {
+  data?.samples?.forEach((sample) => {
+    streamManager.processMetadata('ID3', sample.data, sample.pts);
+  });
+});
+```
+
+It is harmless to register for VOD, where cue points carry the breaks.
+
+`setAdsTracker()` is what links the two: it marks `DaiTracker` as an ad tracker and funnels its events into the content tracker's session, so ads and content share one `viewId`.
+
+**Constructor options**
+
+| Option | Required | Purpose |
+| --- | --- | --- |
+| `tag` | Yes | The `<video>` element. Source of stream time, mute state and VOD/live detection. |
+| `contentTracker` | No | Your `HLSTracker` instance. The stitched stream is decoded by the same hls.js instance, so quality and manifest data live on the content tracker: pass this and ad events carry `adBitrate`, `adRenditionHeight`, `adRenditionWidth`, `adRenditionName`, and `getStreamType()` can distinguish live from VOD. Omit it and those are `null` during ads. |
+
+#### What changes in your data
+
+Attaching a `DaiTracker` changes five things about your data. All of them only apply while an ads tracker is attached — behaviour without one is unchanged.
+
+**Content events stand down during a break.** Content pause, resume, seek and buffering are suppressed while an ad is on screen, and `CONTENT_START` is held until the break ends, so a pre-roll is not reported as content playback. They resume automatically afterwards.
+
+**A transition already in progress still completes.** If content was buffering or seeking when the break began, that buffer/seek is closed at the real resume moment rather than held open — otherwise the whole ad pod would be billed to content rebuffering.
+
+**`contentPlayhead` and `contentDuration` are content time, not stream time.** A stitched stream's clock includes every ad played so far, so these are converted via the SDK's `contentTimeForStreamTime`. On a 794s stream carrying 60s of ads, `contentDuration` reports 734s.
+
+**`adPlayhead` is measured from the start of the ad, not the stitched stream position.** The media element's clock keeps running through an ad under SSAI, so a mid-roll would otherwise report a playhead in the hundreds of seconds for a 10s creative. It comes from the SDK's own ad clock (`adProgressData.currentTime`), which is ad-relative and starts at 0. One consequence is worth knowing before you build a dashboard: `adPlayhead` tops out near **99.76%** of `adDuration` and never reaches it, so measure ad completion from `AD_END` or the third quartile rather than comparing the two. See [DATAMODEL.md](DATAMODEL.md).
+
+**DAI stream errors are reported as content errors as well as ad errors.** A failed stream request means nothing plays, and New Relic derives startup-failure metrics from content errors only. If a break is open the error is reported on both. Error messages have query strings stripped from any embedded request URL, because those carry identifiers such as `ppid` and `cust_params`.
+
+**Script-tag (UMD) consumers** reach the class as a static on the global, since the UMD bundle exposes only the default export:
+
+```javascript
+var daiTracker = new HLSTracker.DaiTracker(streamManager, {
+  tag: video,
+  contentTracker: tracker,
+});
+```
+
+A complete runnable example is in [`samples/dai/index.html`](samples/dai/index.html).
+
+#### Limitations
+
+- **Live pre-rolls may report `CONTENT_START` a moment early.** The pre-roll guard relies on DAI cue points, which the SDK provides for VOD only. On a live stream the guard falls back to the SDK's ad-break events, and those arrive just after playback has already entered the ad.
+- **A live pre-roll is reported as `adPosition: 'mid'`.** `adPosition` comes from the IMA ad pod index, where `0` means pre-roll. On live, measurement shows the SDK uses the index as a large monotonic identifier instead (`2965801`, `2965802`, …), so it never equals `0` and every live ad — pre-roll included — maps to `mid`. Live mid-rolls, the common case, are correct. If you serve live pre-rolls and need them distinguished, raise an issue; `AdPodInfo.getTimeOffset()` is the untested candidate.
 
 ## Best Practices
 
