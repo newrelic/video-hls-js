@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>HLS.js + Google DAI</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script src="https://imasdk.googleapis.com/js/sdkloader/ima3_dai.js"></script>
+  <script src="../dist/umd/newrelic-video-hls.min.js"></script>
+</head>
+<body>
+  <!-- ?type=live (default) or ?type=vod -->
+  <p>
+    <a href="?type=live">Live</a> | <a href="?type=vod">VOD</a>
+    — <span id="status">idle</span>
+  </p>
+  <video id="video" controls muted autoplay height="315" width="500"></video>
+  <pre id="log" style="height:200px;overflow:auto;border:1px solid #ccc"></pre>
+
+  <script>
+    // Fill in your New Relic browser agent details
+    const options = {
+      info: {
+        beacon: 'xxxxxxxxxxx',
+        licenseKey: 'xxxxxxxxxxx',
+        applicationID: 'xxxxxxxxxxx',
+      },
+      config: { ad: { type: 'ssai:dai' } }, // AD_TRACKING.SSAI.DAI
+    };
+
+    // Google public DAI sample streams
+    const LIVE = { assetKey: 'sN_IYUG8STe1ZzhIIE_ksA' };
+    const VOD = { contentSourceId: '2548831', videoId: 'tos-dai-hls' };
+    const FALLBACK = 'https://storage.googleapis.com/testtopbox-public/video_content/bbb/master.m3u8';
+
+    const video = document.getElementById('video');
+    const logEl = document.getElementById('log');
+    const log = (msg) => {
+      logEl.textContent += `${new Date().toISOString().slice(11, 23)} ${msg}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    };
+
+    const type = new URLSearchParams(location.search).get('type') || 'live';
+    const dai = google.ima.dai.api;
+    const StreamEvent = dai.StreamEvent.Type;
+
+    const hls = new Hls();
+    hls.attachMedia(video);
+
+    const streamManager = new dai.StreamManager(video);
+    const tracker = new HLSTracker(hls, options);
+    // Tracker listens to the StreamManager and forwards ID3 metadata to it
+    tracker.setStreamManager(streamManager);
+
+    // Page-level logging only; New Relic data comes from the tracker
+    [
+      StreamEvent.LOADED, StreamEvent.AD_BREAK_STARTED, StreamEvent.AD_BREAK_ENDED,
+      StreamEvent.STARTED, StreamEvent.FIRST_QUARTILE, StreamEvent.MIDPOINT,
+      StreamEvent.THIRD_QUARTILE, StreamEvent.COMPLETE, StreamEvent.ERROR,
+    ].forEach((t) => streamManager.addEventListener(t, () => log(t)));
+
+    // Debug: show which Ad getters Google exposes and what they return
+    streamManager.addEventListener(StreamEvent.STARTED, (e) => {
+      const ad = e.getAd();
+      const out = {};
+      for (const k of Object.getOwnPropertyNames(Object.getPrototypeOf(ad) || {})) {
+        if (/^get/.test(k)) { try { out[k] = ad[k](); } catch (err) { out[k] = 'ERR'; } }
+      }
+      log('ad: ' + JSON.stringify(out));
+    });
+
+    streamManager.addEventListener(StreamEvent.LOADED, (e) => {
+      const url = e.getStreamData().url;
+      document.getElementById('status').textContent = `${type} loaded`;
+      hls.loadSource(url);
+      video.play().catch(() => {});
+    });
+
+    streamManager.addEventListener(StreamEvent.ERROR, () => {
+      log('DAI error — playing fallback');
+      hls.loadSource(FALLBACK);
+    });
+
+    let request;
+    if (type === 'vod') {
+      request = new dai.VODStreamRequest();
+      request.contentSourceId = VOD.contentSourceId;
+      request.videoId = VOD.videoId;
+    } else {
+      request = new dai.LiveStreamRequest();
+      request.assetKey = LIVE.assetKey;
+    }
+    request.format = dai.StreamRequest.StreamFormat.HLS;
+    streamManager.requestStream(request);
+    document.getElementById('status').textContent = `${type} requested`;
+  </script>
+</body>
+</html>

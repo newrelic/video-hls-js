@@ -1,4 +1,4 @@
-import HLSTracker from './tracker';
+import HLSTracker, { AD_TRACKING } from './tracker';
 
 export default HLSTracker;
-export { HLSTracker };
+export { HLSTracker, AD_TRACKING };
