@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>New Relic HLS.js + Google IMA DAI</title>
+
+    <!-- HLS.js player -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+
+    <!-- Google IMA DAI SDK: provides google.ima.dai.api.* -->
+    <script src="https://imasdk.googleapis.com/js/sdkloader/ima3_dai.js"></script>
+
+    <!-- New Relic HLS tracker (UMD: exposes HLSTracker, with HLSTracker.DaiTracker) -->
+    <script src="../../dist/umd/newrelic-video-hls.min.js"></script>
+
+    <style>
+      body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+      .container { max-width: 840px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 8px; }
+      button { background: #007cba; color: #fff; border: 0; padding: 10px 20px; margin: 5px 5px 5px 0; border-radius: 4px; cursor: pointer; }
+      button:hover { background: #005a87; }
+      #status { margin-top: 15px; padding: 10px; background: #e7f3ff; border-left: 4px solid #007cba; border-radius: 4px; }
+      #log { margin-top: 20px; max-height: 300px; overflow-y: auto; background: #1e1e1e; color: #fff; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 12px; }
+      #log div { padding: 2px 0; border-bottom: 1px solid #333; }
+      .t { color: #4caf50; }
+      .e { color: #ff9800; }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <h1>HLS.js + Google IMA DAI</h1>
+
+      <video id="video" controls width="800" height="450"></video>
+
+      <div>
+        <button onclick="loadVod()">Load VOD Stream</button>
+        <button onclick="loadLive()">Load Live Stream</button>
+        <button onclick="reset()">Reset</button>
+      </div>
+
+      <div id="status">Ready.</div>
+      <div id="log"></div>
+    </div>
+
+    <script>
+      /* Get the info object from the video agent onboarding. */
+      var options = {
+        info: {
+          beacon: 'xxxxxxxxxxx',
+          licenseKey: 'xxxxxxxxxxx',
+          applicationID: 'xxxxxxxxxx',
+        },
+      };
+
+      // Google's public DAI test assets.
+      var VOD_CMS_ID = '2548831';
+      var VOD_VIDEO_ID = 'tears-of-steel';
+      var LIVE_ASSET_KEY = 'sN_IYUG8STe1ZzhIIE_ksA';
+
+      var video = document.getElementById('video');
+      var hls = null;
+      var hlsTracker = null;
+      var daiTracker = null;
+      var streamManager = null;
+
+      function status(msg) {
+        document.getElementById('status').textContent = msg;
+        log(msg);
+      }
+
+      function log(msg, cls) {
+        var line = document.createElement('div');
+        line.innerHTML =
+          '<span class="t">' + new Date().toLocaleTimeString() + '</span> ' +
+          '<span class="' + (cls || '') + '">' + msg + '</span>';
+        var el = document.getElementById('log');
+        el.appendChild(line);
+        el.scrollTop = el.scrollHeight;
+      }
+
+      function setup() {
+        reset();
+
+        hls = new Hls();
+        // Attach the media element before constructing the tracker: the tracker
+        // resolves its tag from hls.media, which is null until attachMedia().
+        // Only loadSource() has to wait for DAI to hand us the stitched URL.
+        hls.attachMedia(video);
+        hlsTracker = new HLSTracker(hls, options);
+
+        streamManager = new google.ima.dai.api.StreamManager(video);
+
+        // DaiTracker rides on the content tracker's session: setAdsTracker sets
+        // isAd()/parentTracker so these events land as VideoAdAction under the
+        // same viewId as the content events.
+        daiTracker = new HLSTracker.DaiTracker(streamManager, {
+          tag: video,
+          contentTracker: hlsTracker,
+        });
+        hlsTracker.setAdsTracker(daiTracker);
+
+        // REQUIRED for live streams: forward the stream's in-band ID3 timed
+        // metadata to the SDK. Live ad breaks are signalled inside the media
+        // segments, not in the cue point list, so without this the SDK never
+        // learns a break started and no ad events fire at all. Harmless for
+        // VOD, where cue points carry the breaks.
+        hls.on(Hls.Events.FRAG_PARSING_METADATA, function (event, data) {
+          if (!streamManager || !data || !data.samples) return;
+          data.samples.forEach(function (sample) {
+            streamManager.processMetadata('ID3', sample.data, sample.pts);
+          });
+        });
+
+        // The app owns loading the stitched manifest into hls.js.
+        streamManager.addEventListener(
+          google.ima.dai.api.StreamEvent.Type.LOADED,
+          function (e) {
+            var url = e.getStreamData().url;
+            log('LOADED — stitched manifest received', 'e');
+            hls.loadSource(url);
+          }
+        );
+
+        streamManager.addEventListener(
+          google.ima.dai.api.StreamEvent.Type.ERROR,
+          function () {
+            status('DAI stream error — check the console.');
+          }
+        );
+
+        // Mirror the ad events the tracker reports, so the page shows what
+        // New Relic is being told.
+        [
+          'AD_BREAK_STARTED', 'AD_BREAK_ENDED', 'STARTED', 'FIRST_QUARTILE',
+          'MIDPOINT', 'THIRD_QUARTILE', 'COMPLETE', 'SKIPPED', 'CUEPOINTS_CHANGED',
+        ].forEach(function (name) {
+          var type = google.ima.dai.api.StreamEvent.Type[name];
+          if (!type) return;
+          streamManager.addEventListener(type, function () {
+            log('DAI ' + name, 'e');
+          });
+        });
+      }
+
+      function loadVod() {
+        if (!Hls.isSupported()) {
+          status('HLS.js is not supported in this browser.');
+          return;
+        }
+        setup();
+        var req = new google.ima.dai.api.VODStreamRequest();
+        req.contentSourceId = VOD_CMS_ID;
+        req.videoId = VOD_VIDEO_ID;
+        streamManager.requestStream(req);
+        status('Requesting VOD stream with DAI...');
+      }
+
+      function loadLive() {
+        if (!Hls.isSupported()) {
+          status('HLS.js is not supported in this browser.');
+          return;
+        }
+        setup();
+        var req = new google.ima.dai.api.LiveStreamRequest();
+        req.assetKey = LIVE_ASSET_KEY;
+        streamManager.requestStream(req);
+        status('Requesting Live stream with DAI...');
+      }
+
+      function reset() {
+        if (daiTracker) {
+          daiTracker.unregisterListeners();
+          daiTracker = null;
+        }
+        if (hlsTracker) {
+          hlsTracker.dispose();
+          hlsTracker = null;
+        }
+        if (hls) {
+          hls.destroy();
+          hls = null;
+        }
+        streamManager = null;
+      }
+    </script>
+  </body>
+</html>
