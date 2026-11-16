@@ -27,11 +27,12 @@ jest.mock('@newrelic/video-core', () => {
     sendAdBreakStart() {}
     sendAdBreakEnd() {}
     sendStart() {}
-    sendAdQuartile() {}
-    sendEnd() {}
+    sendAdQuartile(att) { this.sendVideoAdAction('AD_QUARTILE', att); }
+    sendEnd(att) { this.sendVideoAdAction('AD_END', att); }
     sendPause() {}
     sendResume() {}
     sendAdClick() {}
+    sendVideoAdAction() {}
   }
   const nrvideo = {
     VideoTracker,
@@ -758,13 +759,13 @@ describe('DaiTracker — ad playback events', () => {
     [StreamEventType.FIRST_QUARTILE, 1],
     [StreamEventType.MIDPOINT, 2],
     [StreamEventType.THIRD_QUARTILE, 3],
-  ])('%s calls sendAdQuartile({ quartile: %i })', (type, quartile) => {
+  ])('%s calls sendAdQuartile({ adQuartile: %i })', (type, adQuartile) => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
     jest.spyOn(tracker, 'sendAdQuartile');
     startAd(tracker, sm);
     sm._emit(type, {});
-    expect(tracker.sendAdQuartile).toHaveBeenCalledWith({ quartile });
+    expect(tracker.sendAdQuartile).toHaveBeenCalledWith({ adQuartile });
   });
 
   it('COMPLETE calls sendEnd() and clears the current ad', () => {
@@ -777,14 +778,38 @@ describe('DaiTracker — ad playback events', () => {
     expect(tracker.getCurrentAd()).toBeNull();
   });
 
-  it('SKIPPED calls sendEnd({ skipped: true }) and clears the current ad', () => {
+  it('SKIPPED calls sendEnd({ adSkipped: 1 }) and clears the current ad', () => {
     const sm = createMockStreamManager();
     const tracker = new DaiTracker(sm, { tag: createMockTag() });
     startAd(tracker, sm);
     jest.spyOn(tracker, 'sendEnd');
     sm._emit(StreamEventType.SKIPPED, {});
-    expect(tracker.sendEnd).toHaveBeenCalledWith({ skipped: true });
+    expect(tracker.sendEnd).toHaveBeenCalledWith({ adSkipped: 1 });
     expect(tracker.getCurrentAd()).toBeNull();
+  });
+
+  it('publishes adQuartile and adSkipped, with no quartile or skipped keys', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    const spy = jest.spyOn(tracker, 'sendVideoAdAction');
+    startAd(tracker, sm);
+    sm._emit(StreamEventType.MIDPOINT, {});
+    sm._emit(StreamEventType.SKIPPED, {});
+    expect(spy).toHaveBeenNthCalledWith(1, 'AD_QUARTILE', { adQuartile: 2 });
+    expect(spy).toHaveBeenNthCalledWith(2, 'AD_END', { adSkipped: 1 });
+    spy.mock.calls.forEach(([, att]) => {
+      expect(att).not.toHaveProperty('quartile');
+      expect(att).not.toHaveProperty('skipped');
+    });
+  });
+
+  it('COMPLETE publishes AD_END without adSkipped', () => {
+    const sm = createMockStreamManager();
+    const tracker = new DaiTracker(sm, { tag: createMockTag() });
+    const spy = jest.spyOn(tracker, 'sendVideoAdAction');
+    startAd(tracker, sm);
+    sm._emit(StreamEventType.COMPLETE, {});
+    expect(spy).toHaveBeenCalledWith('AD_END', undefined);
   });
 
   it('PAUSED calls sendPause(), RESUMED calls sendResume()', () => {
@@ -1317,7 +1342,7 @@ describe('DaiTracker — against video-core\'s real event gating', () => {
       state.isRequested = false;
       reported.push('AD_BREAK_END');
     };
-    tracker.sendAdQuartile = ({ quartile }) => reported.push(`AD_QUARTILE${quartile}`);
+    tracker.sendAdQuartile = ({ adQuartile }) => reported.push(`AD_QUARTILE${adQuartile}`);
 
     return { sm, tracker, reported };
   }
@@ -1465,7 +1490,7 @@ describe('DaiTracker — never throws into the SDK dispatch', () => {
     tracker.sendAdQuartile = jest.fn();
     sm._emit(StreamEventType.STARTED, startedEvent());
     sm._emit(StreamEventType.FIRST_QUARTILE, {});
-    expect(tracker.sendAdQuartile).toHaveBeenCalledWith({ quartile: 1 });
+    expect(tracker.sendAdQuartile).toHaveBeenCalledWith({ adQuartile: 1 });
   });
 
   it('still removes the wrapped listeners on unregisterListeners', () => {

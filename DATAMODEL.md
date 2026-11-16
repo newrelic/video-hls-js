@@ -132,6 +132,7 @@ An Attribute is a piece of data associated with an event. Attributes provide add
 | adIsMuted                | True if the video is currently muted.                                                                                                              |
 | adFps                    | Current FPS (Frames per second).                                                                                                                   |
 | adQuartile               | Quartile of the ad. 0 before first, 1 after first quartile, 2 after midpoint, 3 after third quartile, 4 when completed.                            |
+| adSkipped                | number (0/1). Sent as `1` on the AD_END of an ad the viewer skipped; absent otherwise (web never sends 0). Google DAI only.                      |
 | adPosition               | The position of the ad: `pre`, `mid` or `post`. With Google DAI this comes from the IMA ad pod index, so it is stable for the whole ad. See the DAI note below. |
 | adCreativeId             | The creative ID of the ad.                                                                                                                         |
 | adPartner                | The ad partner, e.g., ima, freewheel. `google-dai` for server-side inserted ads.                                                                   |

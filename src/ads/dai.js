@@ -288,17 +288,17 @@ export default class DaiTracker extends nrvideo.VideoTracker {
 
   onAdFirstQuartile() {
     if (!this.hasAdInFlight()) return;
-    this.sendAdQuartile({ quartile: 1 });
+    this.sendAdQuartile({ adQuartile: 1 });
   }
 
   onAdMidpoint() {
     if (!this.hasAdInFlight()) return;
-    this.sendAdQuartile({ quartile: 2 });
+    this.sendAdQuartile({ adQuartile: 2 });
   }
 
   onAdThirdQuartile() {
     if (!this.hasAdInFlight()) return;
-    this.sendAdQuartile({ quartile: 3 });
+    this.sendAdQuartile({ adQuartile: 3 });
   }
 
   onAdComplete() {
@@ -307,7 +307,7 @@ export default class DaiTracker extends nrvideo.VideoTracker {
   }
 
   onAdSkipped() {
-    this.sendEnd({ skipped: true });
+    this.sendEnd({ adSkipped: 1 });
     this.clearCurrentAd();
   }
 
